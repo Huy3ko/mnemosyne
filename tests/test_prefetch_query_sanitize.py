@@ -192,7 +192,10 @@ def test_prefetch_nonempty_uses_exact_query(provider, query, expected):
     assert p._beam.canonical_reads
 
 
-@pytest.mark.parametrize("query", ["[Alice] [Bob]", "[Alice] !?", "", " \t"])
+@pytest.mark.parametrize("query", [
+    "[Alice] [Bob]", "[Alice] !?", "", " \t",
+    "[Bob] earlier\n\n[New message]\n[Alice] [Bob]",
+])
 def test_explicit_recall_empty_calls_no_sources(provider, query):
     _, _, p = provider
     p._shared_surface_read = True
@@ -217,6 +220,15 @@ def test_explicit_recall_preserves_suffix_and_surface_query(provider, explain):
         assert output["count"] > 0
     finally:
         surface.conn.close()
+
+
+def test_explicit_recall_strips_channel_backfill(provider):
+    _, _, p = provider
+    query = "[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order"
+    output = json.loads(p._handle_recall({"query": query}))
+    assert output["query"] == "what ramen does user order"
+    assert [q for q, _ in p._beam.queries] == ["what ramen does user order"]
+    assert output["count"] > 0
 
 
 def test_large_repeated_stamp_input():
