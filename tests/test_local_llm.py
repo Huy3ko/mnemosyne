@@ -1188,6 +1188,27 @@ class TestModelSelectionEnv:
         assert "MiniCPM5-1B-Q4_K_M.gguf" in warning
         assert ".repositories" in warning
 
+    def test_absolute_filename_is_used_as_given(self, monkeypatch, tmp_path):
+        """An absolute selection names one file; the cache root does not apply."""
+        self._cache(monkeypatch, tmp_path)
+        outside = tmp_path / "elsewhere.gguf"
+        outside.write_bytes(b"gguf")
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", str(outside))
+        calls = []
+        self._fake_hub(monkeypatch, calls=calls)
+
+        assert local_llm._model_path() == outside
+        assert local_llm._download_model() == outside
+        assert calls == []
+
+    def test_parent_directory_filename_is_rejected(self, monkeypatch, tmp_path):
+        self._cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "../other-repo/model.gguf")
+
+        assert local_llm._model_path() is None
+        with pytest.raises(ValueError, match="parent-directory"):
+            local_llm._download_model()
+
     def test_both_set_select_the_pair_together(self, monkeypatch):
         monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
         monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "other.gguf")

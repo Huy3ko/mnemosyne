@@ -167,7 +167,23 @@ def _resolve_model_selection() -> Tuple[str, str]:
     filename = (
         (os.environ.get("MNEMOSYNE_LLM_FILE") or "").strip() or DEFAULT_MODEL_FILE
     )
-    return repo, filename
+    return repo, _checked_cache_filename(filename)
+
+
+def _checked_cache_filename(filename: str) -> str:
+    """Reject a parent-directory component in the selected filename.
+
+    A ``..`` component climbs out of the repository cache root, so one selection
+    could reach another repository's cached file, which is the collision this
+    change set out to remove. An absolute path is left alone: naming one exact
+    file is an explicit operator choice, and REPO does not apply to it.
+    """
+    if ".." in Path(filename).parts:
+        raise ValueError(
+            "MNEMOSYNE_LLM_FILE must not contain a parent-directory component, "
+            f"got {filename!r}"
+        )
+    return filename
 
 
 def _model_cache_root(repo_id: str) -> Path:
@@ -190,7 +206,13 @@ def _model_cache_path(repo_id: str, filename: str) -> Path:
 
 def _model_path() -> Optional[Path]:
     """Return path to the cached GGUF model file, or None if it is not there."""
-    repo_id, filename = _resolve_model_selection()
+    try:
+        repo_id, filename = _resolve_model_selection()
+    except ValueError as exc:
+        # _load_llm() calls this outside its own try, so degrade here and say why
+        # rather than let an invalid selection escape to the caller.
+        logger.warning("%s", exc)
+        return None
     candidate = _model_cache_path(repo_id, filename)
     return candidate if candidate.exists() else None
 
