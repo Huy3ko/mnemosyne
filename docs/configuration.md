@@ -321,7 +321,7 @@ When the gate is enabled and neither a usable host backend nor a configured remo
 
 Cache entries are keyed by the pair, not by the filename alone, because two repositories can ship the same filename. The shipped repository keeps the historical flat location, `<cache dir>/<file>`, so existing caches keep working untouched; any other repository is stored under `<cache dir>/.repositories/<sha256 of the repo id>/<file>`. A file cached for one repository therefore cannot satisfy a selection pointing at a different one, and switching repository downloads that repository's artifact once.
 
-A filename containing a parent-directory component is rejected, with an error naming the variable, because it would escape the cache root and could reach another repository's cached artifact. An absolute filename is used exactly as given: it names one specific file, the cache root does not apply to it, and REPO is then unused.
+A filename containing a parent-directory component is rejected, with an error naming the variable, because it would escape the cache root and could reach another repository's cached artifact. An absolute filename is used exactly as given: it names one specific file, the cache root does not apply to it, and REPO is not consulted. Because an absolute path cannot be fetched by name, a missing one is rejected rather than downloaded.
 
 ### Remote LLM (OpenAI-compatible)
 

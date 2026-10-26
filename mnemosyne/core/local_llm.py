@@ -263,6 +263,14 @@ def _download_model() -> Path:
     if local_path.exists():
         return local_path
 
+    if Path(filename).is_absolute():
+        # Nothing to fetch by name: the Hub needs a relative filename, and the
+        # selection already said exactly which file it means.
+        raise ValueError(
+            "MNEMOSYNE_LLM_FILE is an absolute path, so the file must already "
+            f"exist; {filename!r} is not there and cannot be downloaded."
+        )
+
     try:
         from huggingface_hub import hf_hub_download
     except ImportError:

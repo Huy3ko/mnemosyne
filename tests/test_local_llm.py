@@ -1201,6 +1201,18 @@ class TestModelSelectionEnv:
         assert local_llm._download_model() == outside
         assert calls == []
 
+    def test_absolute_filename_that_is_missing_is_rejected(self, monkeypatch, tmp_path):
+        """An absolute name cannot be fetched, so a miss must fail loudly."""
+        self._cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", str(tmp_path / "absent.gguf"))
+        calls = []
+        self._fake_hub(monkeypatch, calls=calls)
+
+        assert local_llm._model_path() is None
+        with pytest.raises(ValueError, match="absolute path"):
+            local_llm._download_model()
+        assert calls == []
+
     def test_parent_directory_filename_is_rejected(self, monkeypatch, tmp_path):
         self._cache(monkeypatch, tmp_path)
         monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "../other-repo/model.gguf")
