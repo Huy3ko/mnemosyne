@@ -65,6 +65,14 @@ CASES = [
     ('[Alice] ,!?', ''),
     ('[Alice] [１２] value', '[１２] value'),
     ('[Alice] [½] amount', '[½] amount'),
+    # Hermes history backfill: "<channel context>\n\n[New message]\n<stamped turn>"
+    ('[Bob] lunch at noon?\n[Carol] sure\n\n[New message]\n[Alice] what time does the bakery open',
+     'what time does the bakery open'),
+    ('[Bob] ramen again\n\n[New message]\n[Bob] old\n\n[New message]\n[Alice] museum plans',
+     'museum plans'),
+    ('[Bob] earlier\n\n[New message]\nunstamped turn', 'unstamped turn'),
+    ('[Bob] earlier\n\n[New message]\n[Alice] [Bob]', ''),
+    ('[New message] is just text here', '[New message] is just text here'),
 ]
 
 
@@ -174,6 +182,7 @@ def test_empty_keeps_only_query_independent_context(provider, monkeypatch):
     ("[O’Brien] what ramen does user order", "what ramen does user order"),
     ("  what ramen does user order  ", "  what ramen does user order  "),
     ("[Alice] ＡＢＣ ramen order  ", "ＡＢＣ ramen order  "),
+    ("[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order", "what ramen does user order"),
 ])
 def test_prefetch_nonempty_uses_exact_query(provider, query, expected):
     _, _, p = provider

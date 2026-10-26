@@ -24,6 +24,11 @@ _PREFETCH_NAME_STAMP_RE = re.compile(
 )
 _NAME_INNER_RE = re.compile(r"[^\W\d_](?:[^\W\d_]|[ .'’\-]){0,47}")
 
+# Hermes history backfill puts recent channel messages before the turn:
+# "<channel context>\n\n[New message]\n<stamped turn>". The backfill is
+# other speakers' text, not the query; only the turn after the last marker is.
+_BACKFILL_MARKER = "\n[New message]\n"
+
 
 # Bracketed tokens that look name-shaped but are common content tags, not
 # speakers. Matched case-insensitively against the stamp's inner text.
@@ -105,14 +110,19 @@ def _is_name_stamp(inner: str) -> bool:
 
 
 def sanitize_prefetch_query(query: str) -> str:
-    """Remove leading speaker stamps without rewriting any retained query text.
+    """Remove channel backfill and leading speaker stamps without rewriting
+    any retained query text.
 
     Classification uses NFKC on bounded candidates, never on the query. The
-    returned suffix is sliced once from original input; no-stamp input is
-    returned unchanged. Separating whitespace belongs to the removed prefix.
-    Punctuation-only residue after a stamp is treated as no topical query.
+    returned suffix is sliced from the original input; input with neither
+    backfill nor stamp is returned unchanged. Separating whitespace belongs
+    to the removed prefix. Punctuation-only residue after a stamp is treated
+    as no topical query.
     """
     original = query or ""
+    marker = original.rfind(_BACKFILL_MARKER)
+    if marker >= 0:
+        original = original[marker + len(_BACKFILL_MARKER):]
     offset = 0
     while offset < len(original) and original[offset].isspace():
         offset += 1
