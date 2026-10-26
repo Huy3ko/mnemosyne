@@ -65,15 +65,38 @@ CASES = [
     ('[Alice] ,!?', ''),
     ('[Alice] [１２] value', '[１２] value'),
     ('[Alice] [½] amount', '[½] amount'),
-    # Hermes history backfill: "<channel context>\n\n[New message]\n<stamped turn>"
-    ('[Bob] lunch at noon?\n[Carol] sure\n\n[New message]\n[Alice] what time does the bakery open',
+    # One serialized Hermes recent-channel envelope, followed by the current body.
+    ('[Recent channel messages]\n[Bob] lunch at noon?\n[Carol] sure\n\n[New message]\n[Alice] what time does the bakery open',
      'what time does the bakery open'),
-    ('[Bob] ramen again\n\n[New message]\n[Bob] old\n\n[New message]\n[Alice] museum plans',
-     'museum plans'),
-    ('[Bob] earlier\n\n[New message]\nunstamped turn', 'unstamped turn'),
-    ('[Bob] earlier\n\n[New message]\n[Alice] [Bob]', ''),
+    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\nunstamped turn', 'unstamped turn'),
+    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] [Bob]', ''),
     ('[New message] is just text here', '[New message] is just text here'),
 ]
+
+# Markers and sender stamps inside the current body are ordinary query text.
+PRESERVATION_CASES = [
+    ('what ramen means\n[New message]\n[Alice] ramen order',
+     'what ramen means\n[New message]\n[Alice] ramen order'),
+    ('[Alice] what ramen means\n\n[New message]\n[Bob] ramen order',
+     'what ramen means\n\n[New message]\n[Bob] ramen order'),
+    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n[New message]\n[Bob] ramen order',
+     'what ramen means\n[New message]\n[Bob] ramen order'),
+    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n\n[New message]\n[Bob] ramen order  ',
+     'what ramen means\n\n[New message]\n[Bob] ramen order  '),
+    ('quote: [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order',
+     'quote: [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order'),
+    ('[Recent channel messages]\n[Bob] earlier\n[New message]\n[Alice] ramen order',
+     '[Recent channel messages]\n[Bob] earlier\n[New message]\n[Alice] ramen order'),
+    ('[Recent channel messages]\n\n[New message]\n[Alice] ramen order',
+     '[Recent channel messages]\n\n[New message]\n[Alice] ramen order'),
+    ('[Recent channel messages]\n[Bob] ramen order',
+     '[Recent channel messages]\n[Bob] ramen order'),
+    (' [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order',
+     ' [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order'),
+    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Recent channel messages]\n[Carol] earlier\n\n[New message]\n[Alice] ramen order',
+     '[Recent channel messages]\n[Carol] earlier\n\n[New message]\n[Alice] ramen order'),
+]
+CASES += PRESERVATION_CASES
 
 
 @pytest.mark.parametrize("query,expected", CASES)
@@ -182,7 +205,7 @@ def test_empty_keeps_only_query_independent_context(provider, monkeypatch):
     ("[O’Brien] what ramen does user order", "what ramen does user order"),
     ("  what ramen does user order  ", "  what ramen does user order  "),
     ("[Alice] ＡＢＣ ramen order  ", "ＡＢＣ ramen order  "),
-    ("[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order", "what ramen does user order"),
+    ("[Recent channel messages]\n[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order", "what ramen does user order"),
 ])
 def test_prefetch_nonempty_uses_exact_query(provider, query, expected):
     _, _, p = provider
@@ -192,9 +215,17 @@ def test_prefetch_nonempty_uses_exact_query(provider, query, expected):
     assert p._beam.canonical_reads
 
 
+@pytest.mark.parametrize("query,expected", PRESERVATION_CASES)
+def test_prefetch_preserves_body_markers(provider, query, expected):
+    """Every body byte reaches recall even if the relevance filter emits nothing."""
+    _, _, p = provider
+    p.prefetch(query)
+    assert [q for q, _ in p._beam.queries] == [expected]
+
+
 @pytest.mark.parametrize("query", [
     "[Alice] [Bob]", "[Alice] !?", "", " \t",
-    "[Bob] earlier\n\n[New message]\n[Alice] [Bob]",
+    "[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] [Bob]",
 ])
 def test_explicit_recall_empty_calls_no_sources(provider, query):
     _, _, p = provider
@@ -206,28 +237,35 @@ def test_explicit_recall_empty_calls_no_sources(provider, query):
 
 
 @pytest.mark.parametrize("explain", [False, True])
-def test_explicit_recall_preserves_suffix_and_surface_query(provider, explain):
+@pytest.mark.parametrize("query,expected", [
+    ("[Alice] ＡＢＣ ramen  ", "ＡＢＣ ramen  "),
+] + PRESERVATION_CASES[:4])
+def test_explicit_recall_preserves_suffix_and_surface_query(provider, explain, query, expected):
     _, _, p = provider
     surface = FakeBeam()
     p._shared_surface_read = True
     p._shared_surface_bank = "shared"
     p._surface_beam = surface
     try:
-        output = json.loads(p._handle_recall({"query": "[Alice] ＡＢＣ ramen  ", "explain": explain}))
-        assert output["query"] == "ＡＢＣ ramen  "
-        assert [q for q, _ in p._beam.queries] == ["ＡＢＣ ramen  "]
-        assert [q for q, _ in surface.queries] == ["ＡＢＣ ramen  "]
+        output = json.loads(p._handle_recall({"query": query, "explain": explain}))
+        assert output["query"] == expected
+        assert [q for q, _ in p._beam.queries] == [expected]
+        assert [q for q, _ in surface.queries] == [expected]
         assert output["count"] > 0
     finally:
         surface.conn.close()
 
 
-def test_explicit_recall_strips_channel_backfill(provider):
+@pytest.mark.parametrize("query,expected", [
+    ("[Recent channel messages]\n[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order",
+     "what ramen does user order"),
+] + PRESERVATION_CASES)
+def test_explicit_recall_uses_exact_query(provider, query, expected):
+    """Recall preserves body markers while removing a recognized outer envelope."""
     _, _, p = provider
-    query = "[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order"
     output = json.loads(p._handle_recall({"query": query}))
-    assert output["query"] == "what ramen does user order"
-    assert [q for q, _ in p._beam.queries] == ["what ramen does user order"]
+    assert output["query"] == expected
+    assert [q for q, _ in p._beam.queries] == [expected]
     assert output["count"] > 0
 
 

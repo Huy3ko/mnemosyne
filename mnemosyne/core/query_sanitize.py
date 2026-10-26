@@ -24,10 +24,10 @@ _PREFETCH_NAME_STAMP_RE = re.compile(
 )
 _NAME_INNER_RE = re.compile(r"[^\W\d_](?:[^\W\d_]|[ .'’\-]){0,47}")
 
-# Hermes history backfill puts recent channel messages before the turn:
-# "<channel context>\n\n[New message]\n<stamped turn>". The backfill is
-# other speakers' text, not the query; only the turn after the last marker is.
-_BACKFILL_MARKER = "\n[New message]\n"
+# Recognize only Hermes' serialized recent-channel envelope at the start.
+# A marker or sender stamp alone cannot distinguish an envelope from body text.
+_BACKFILL_HEADER = "[Recent channel messages]\n"
+_BACKFILL_MARKER = "\n\n[New message]\n"
 
 
 # Bracketed tokens that look name-shaped but are common content tags, not
@@ -118,11 +118,18 @@ def sanitize_prefetch_query(query: str) -> str:
     backfill nor stamp is returned unchanged. Separating whitespace belongs
     to the removed prefix. Punctuation-only residue after a stamp is treated
     as no topical query.
+
+    A recent-channel envelope must start with the exact header, contain
+    nonempty history, and end at the first blank-line-delimited marker.
+    Everything after that boundary is body text, including further markers
+    or envelopes. This is a serialization convention, not authentication;
+    other channel-context formats are conservatively retained.
     """
     original = query or ""
-    marker = original.rfind(_BACKFILL_MARKER)
-    if marker >= 0:
-        original = original[marker + len(_BACKFILL_MARKER):]
+    if original.startswith(_BACKFILL_HEADER):
+        marker = original.find(_BACKFILL_MARKER, len(_BACKFILL_HEADER))
+        if marker >= 0 and original[len(_BACKFILL_HEADER):marker].strip():
+            original = original[marker + len(_BACKFILL_MARKER):]
     offset = 0
     while offset < len(original) and original[offset].isspace():
         offset += 1
