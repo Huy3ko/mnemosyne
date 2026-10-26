@@ -170,17 +170,22 @@ def _resolve_model_selection() -> Tuple[str, str]:
     return repo, filename
 
 
-def _model_cache_path(repo_id: str, filename: str) -> Path:
-    """Return where the given (repo id, filename) pair is cached.
+def _model_cache_root(repo_id: str) -> Path:
+    """Return the cache directory that holds this repository's artifacts.
 
-    The shipped repo keeps the historical flat path so existing caches keep
+    The shipped repo keeps the historical flat root so existing caches keep
     working. Any other repo is namespaced by a hash, because a filename alone
     does not identify an artifact: two repos can ship the same name.
     """
     if repo_id == _SHIPPED_MODEL[0]:
-        return MODEL_CACHE_DIR / filename
+        return MODEL_CACHE_DIR
     repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
-    return MODEL_CACHE_DIR / ".repositories" / repo_key / filename
+    return MODEL_CACHE_DIR / ".repositories" / repo_key
+
+
+def _model_cache_path(repo_id: str, filename: str) -> Path:
+    """Return the full cache path for one (repo id, filename) pair."""
+    return _model_cache_root(repo_id) / filename
 
 
 def _model_path() -> Optional[Path]:
@@ -243,7 +248,22 @@ def _download_model() -> Path:
             "huggingface_hub not installed. Run: pip install huggingface-hub"
         )
 
-    local_path.parent.mkdir(parents=True, exist_ok=True)
+    # The download root, not the file's parent: hf_hub_download joins the root
+    # with the filename, so a nested filename must keep its own separators.
+    cache_root = _model_cache_root(repo_id)
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "Could not create the local model cache directory %s for %s from %s: %s. "
+            "Point MNEMOSYNE_MODEL_CACHE_DIR at a writable directory, or fix its "
+            "permissions.",
+            cache_root,
+            filename,
+            repo_id,
+            exc,
+        )
+        raise
     size_notice = (
         " (approximately 656 MB)" if (repo_id, filename) == _SHIPPED_MODEL else ""
     )
@@ -261,7 +281,7 @@ def _download_model() -> Path:
         downloaded = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
-            local_dir=str(local_path.parent),
+            local_dir=str(cache_root),
             local_dir_use_symlinks=False,
         )
     except Exception as exc:

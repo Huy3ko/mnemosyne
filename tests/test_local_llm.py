@@ -1155,6 +1155,39 @@ class TestModelSelectionEnv:
         other = local_llm._model_cache_path("someone/other-gguf", "shared.gguf")
         assert other != cache_dir / "shared.gguf"
 
+    def test_nested_filename_lands_where_the_lookup_expects(self, monkeypatch, tmp_path):
+        """A filename with a separator must not be nested twice on download."""
+        cache_dir = self._cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "quant/model.gguf")
+        calls = []
+        self._fake_hub(monkeypatch, calls=calls)
+
+        assert local_llm._model_path() is None
+        downloaded = local_llm._download_model()
+
+        # hf_hub_download joins local_dir with the filename, so local_dir has to
+        # be the cache root; handing it the file's parent doubled the subdir.
+        assert calls[0]["local_dir"] == str(cache_dir)
+        assert downloaded == cache_dir / "quant" / "model.gguf"
+        assert local_llm._model_path() == downloaded
+
+    def test_cache_directory_failure_names_the_selection(self, monkeypatch, tmp_path, caplog):
+        cache_dir = self._cache(monkeypatch, tmp_path)
+        cache_dir.mkdir(parents=True)
+        # A file where the namespace directory must go makes mkdir raise.
+        (cache_dir / ".repositories").write_bytes(b"not a directory")
+        monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
+        self._fake_hub(monkeypatch)
+
+        with caplog.at_level(logging.WARNING, logger=local_llm.__name__):
+            with pytest.raises(OSError):
+                local_llm._download_model()
+
+        warning = caplog.records[-1].getMessage()
+        assert "someone/other-gguf" in warning
+        assert "MiniCPM5-1B-Q4_K_M.gguf" in warning
+        assert ".repositories" in warning
+
     def test_both_set_select_the_pair_together(self, monkeypatch):
         monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
         monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "other.gguf")
