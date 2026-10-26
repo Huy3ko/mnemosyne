@@ -9,6 +9,7 @@ Model cache: ~/.hermes/mnemosyne/models/
 Default model: openbmb/MiniCPM5-1B-GGUF (Q4_K_M, ~656MB)
 """
 
+import hashlib
 import logging
 import os
 import sys
@@ -169,10 +170,23 @@ def _resolve_model_selection() -> Tuple[str, str]:
     return repo, filename
 
 
+def _model_cache_path(repo_id: str, filename: str) -> Path:
+    """Return where the given (repo id, filename) pair is cached.
+
+    The shipped repo keeps the historical flat path so existing caches keep
+    working. Any other repo is namespaced by a hash, because a filename alone
+    does not identify an artifact: two repos can ship the same name.
+    """
+    if repo_id == _SHIPPED_MODEL[0]:
+        return MODEL_CACHE_DIR / filename
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    return MODEL_CACHE_DIR / ".repositories" / repo_key / filename
+
+
 def _model_path() -> Optional[Path]:
     """Return path to the cached GGUF model file, or None if it is not there."""
-    _, filename = _resolve_model_selection()
-    candidate = MODEL_CACHE_DIR / filename
+    repo_id, filename = _resolve_model_selection()
+    candidate = _model_cache_path(repo_id, filename)
     return candidate if candidate.exists() else None
 
 
@@ -218,7 +232,7 @@ def _download_model() -> Path:
     """Download the selected GGUF model from HuggingFace if it is not cached."""
     _ensure_model_cache_dir()
     repo_id, filename = _resolve_model_selection()
-    local_path = MODEL_CACHE_DIR / filename
+    local_path = _model_cache_path(repo_id, filename)
     if local_path.exists():
         return local_path
 
@@ -229,6 +243,7 @@ def _download_model() -> Path:
             "huggingface_hub not installed. Run: pip install huggingface-hub"
         )
 
+    local_path.parent.mkdir(parents=True, exist_ok=True)
     size_notice = (
         " (approximately 656 MB)" if (repo_id, filename) == _SHIPPED_MODEL else ""
     )
@@ -240,13 +255,13 @@ def _download_model() -> Path:
         filename,
         repo_id,
         size_notice,
-        MODEL_CACHE_DIR,
+        local_path.parent,
     )
     try:
         downloaded = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
-            local_dir=str(MODEL_CACHE_DIR),
+            local_dir=str(local_path.parent),
             local_dir_use_symlinks=False,
         )
     except Exception as exc:
@@ -258,7 +273,7 @@ def _download_model() -> Path:
             "GGUF at that path.",
             filename,
             repo_id,
-            MODEL_CACHE_DIR,
+            local_path.parent,
             exc,
         )
         raise

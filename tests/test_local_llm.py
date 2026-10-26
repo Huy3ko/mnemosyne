@@ -1102,14 +1102,58 @@ class TestModelSelectionEnv:
 
         local_llm._download_model()
 
-        assert calls == [
-            {
-                "repo_id": "someone/other-gguf",
-                "filename": "MiniCPM5-1B-Q4_K_M.gguf",
-                "local_dir": str(cache_dir),
-                "local_dir_use_symlinks": False,
-            }
-        ]
+        assert calls[0]["repo_id"] == "someone/other-gguf"
+        assert calls[0]["filename"] == "MiniCPM5-1B-Q4_K_M.gguf"
+        # A non-default repo is namespaced, so its download cannot land on the
+        # flat path shared with the shipped artifact.
+        download_root = Path(calls[0]["local_dir"])
+        assert download_root != cache_dir
+        assert download_root.name != ".repositories"
+        assert download_root.parent.parent == cache_dir
+        assert download_root.parent.name == ".repositories"
+        assert (download_root / "MiniCPM5-1B-Q4_K_M.gguf").is_file()
+
+    def test_default_repo_keeps_the_historical_flat_cache_path(
+        self, monkeypatch, tmp_path
+    ):
+        """Existing caches must keep working: the shipped repo stays flat."""
+        cache_dir = self._cache(monkeypatch, tmp_path)
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "MiniCPM5-1B-Q4_K_M.gguf").write_bytes(b"gguf")
+        calls = []
+        self._fake_hub(monkeypatch, calls=calls)
+
+        assert local_llm._model_path() == cache_dir / "MiniCPM5-1B-Q4_K_M.gguf"
+        assert local_llm._download_model() == cache_dir / "MiniCPM5-1B-Q4_K_M.gguf"
+        assert calls == []
+
+    def test_cached_default_does_not_satisfy_a_different_repo(
+        self, monkeypatch, tmp_path
+    ):
+        """A cached file is not the selected artifact when the repo differs."""
+        cache_dir = self._cache(monkeypatch, tmp_path)
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "MiniCPM5-1B-Q4_K_M.gguf").write_bytes(b"gguf")
+        monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
+        calls = []
+        self._fake_hub(monkeypatch, calls=calls)
+
+        # The flat file belongs to the shipped repo, so it cannot answer for
+        # another one even though the filename matches.
+        assert local_llm._model_path() is None
+        local_llm._download_model()
+        assert calls[0]["repo_id"] == "someone/other-gguf"
+
+    def test_same_filename_in_two_repos_resolves_separately(self, monkeypatch, tmp_path):
+        cache_dir = self._cache(monkeypatch, tmp_path)
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "shared.gguf").write_bytes(b"shipped")
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "shared.gguf")
+        monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
+
+        assert local_llm._model_path() is None
+        other = local_llm._model_cache_path("someone/other-gguf", "shared.gguf")
+        assert other != cache_dir / "shared.gguf"
 
     def test_both_set_select_the_pair_together(self, monkeypatch):
         monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
