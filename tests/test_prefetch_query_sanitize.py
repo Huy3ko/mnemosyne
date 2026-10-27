@@ -95,6 +95,9 @@ PRESERVATION_CASES = [
 # Identical bytes can put the extra separator in history OR the current body.
 # Do not guess either boundary: nested envelopes and legitimate bodies survive.
 AMBIGUOUS_BACKFILL_QUERIES = [
+    # Empty history: the first separator shares the header's final newline.
+    '[Recent channel messages]\n\n[New message]\nwhat ramen?\n\n[New message]\n',
+    '[Recent channel messages]\n\n[New message]\n[Alice] ＡＢＣ question\t \n\n[New message]\n[Bob] ramen order  ',
     '[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] what time is it',
     '[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] [Bob]',
     '[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n\n[New message]\n[Bob] ramen order  ',

@@ -130,10 +130,13 @@ def sanitize_prefetch_query(query: str) -> str:
     """
     original = query or ""
     if original.startswith(_BACKFILL_HEADER):
-        marker = original.find(_BACKFILL_MARKER, len(_BACKFILL_HEADER))
+        # An empty-history marker can share the header's final newline.
+        # Count it too, so a later body marker cannot look unique.
+        marker_start = len(_BACKFILL_HEADER) - 1
+        marker = original.find(_BACKFILL_MARKER, marker_start)
         if (
             marker >= 0
-            and marker == original.rfind(_BACKFILL_MARKER, len(_BACKFILL_HEADER))
+            and marker == original.rfind(_BACKFILL_MARKER, marker_start)
             and original[len(_BACKFILL_HEADER):marker].strip()
         ):
             original = original[marker + len(_BACKFILL_MARKER):]
