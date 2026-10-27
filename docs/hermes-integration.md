@@ -67,9 +67,11 @@ Both Hermes providers sanitize prefetch and explicit `mnemosyne_recall` queries
 without changing captured text or stored memories. They recognize one serialized
 recent-channel envelope only when the query starts exactly with
 `[Recent channel messages]\n`, followed by nonempty history and a
-`\n\n[New message]\n` separator. The first such separator ends the envelope;
-the remaining body then receives the usual leading speaker-stamp removal.
-Later markers and nested envelopes in that body remain literal query text.
+`\n\n[New message]\n` separator. The **last** such separator ends the envelope, since relay history can
+contain identical blank-line markers. The remaining suffix then receives
+the usual leading speaker-stamp removal. A literal identical separator in
+the current body is ambiguous in this text-only serialization and will
+also be treated as a boundary.
 
 A marker or sender stamp alone does not identify an envelope. Unwrapped bodies,
 incomplete envelopes, and other channel-context formats retain their text,

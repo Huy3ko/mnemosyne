@@ -73,7 +73,7 @@ CASES = [
     ('[New message] is just text here', '[New message] is just text here'),
 ]
 
-# Markers and sender stamps inside the current body are ordinary query text.
+# Unwrapped markers and non-delimited markers inside body text stay literal.
 PRESERVATION_CASES = [
     ('what ramen means\n[New message]\n[Alice] ramen order',
      'what ramen means\n[New message]\n[Alice] ramen order'),
@@ -81,8 +81,6 @@ PRESERVATION_CASES = [
      'what ramen means\n\n[New message]\n[Bob] ramen order'),
     ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n[New message]\n[Bob] ramen order',
      'what ramen means\n[New message]\n[Bob] ramen order'),
-    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n\n[New message]\n[Bob] ramen order  ',
-     'what ramen means\n\n[New message]\n[Bob] ramen order  '),
     ('quote: [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order',
      'quote: [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order'),
     ('[Recent channel messages]\n[Bob] earlier\n[New message]\n[Alice] ramen order',
@@ -93,10 +91,20 @@ PRESERVATION_CASES = [
      '[Recent channel messages]\n[Bob] ramen order'),
     (' [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order',
      ' [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order'),
-    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Recent channel messages]\n[Carol] earlier\n\n[New message]\n[Alice] ramen order',
-     '[Recent channel messages]\n[Carol] earlier\n\n[New message]\n[Alice] ramen order'),
 ]
-CASES += PRESERVATION_CASES
+# Relay can include blank-line [New message] markers inside historical
+# backfill. Only the last separator precedes the current user message.
+MULTI_SEPARATOR_CASES = [
+    ('[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] what time is it',
+     'what time is it'),
+    ('[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] [Bob]',
+     ''),
+    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n\n[New message]\n[Bob] ramen order  ',
+     'ramen order  '),
+    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Recent channel messages]\n[Carol] earlier\n\n[New message]\n[Alice] ramen order',
+     'ramen order'),
+]
+CASES += PRESERVATION_CASES + MULTI_SEPARATOR_CASES
 
 
 @pytest.mark.parametrize("query,expected", CASES)
@@ -222,10 +230,18 @@ def test_prefetch_preserves_body_markers(provider, query, expected):
     p.prefetch(query)
     assert [q for q, _ in p._beam.queries] == [expected]
 
+@pytest.mark.parametrize("query,expected", [case for case in MULTI_SEPARATOR_CASES if case[1]])
+def test_prefetch_uses_last_backfill_separator(provider, query, expected):
+    """Historical messages separated by markers never reach Beam prefetch."""
+    _, _, p = provider
+    p.prefetch(query)
+    assert [q for q, _ in p._beam.queries] == [expected]
+
 
 @pytest.mark.parametrize("query", [
     "[Alice] [Bob]", "[Alice] !?", "", " \t",
     "[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] [Bob]",
+    MULTI_SEPARATOR_CASES[1][0],
 ])
 def test_explicit_recall_empty_calls_no_sources(provider, query):
     _, _, p = provider
@@ -259,7 +275,7 @@ def test_explicit_recall_preserves_suffix_and_surface_query(provider, explain, q
 @pytest.mark.parametrize("query,expected", [
     ("[Recent channel messages]\n[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order",
      "what ramen does user order"),
-] + PRESERVATION_CASES)
+] + PRESERVATION_CASES + [case for case in MULTI_SEPARATOR_CASES if case[1]])
 def test_explicit_recall_uses_exact_query(provider, query, expected):
     """Recall preserves body markers while removing a recognized outer envelope."""
     _, _, p = provider
