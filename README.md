@@ -224,6 +224,10 @@ work_mem.remember("Sprint review on Friday")
 
 ### Advanced: BEAM Direct Access
 
+When consolidation uses an OpenAI-compatible LLM endpoint (`MNEMOSYNE_LLM_BASE_URL`),
+Markdown bullet facts in its summaries are preserved. Prompt/token cleanup and
+reasoning safeguards still apply; local GGUF bullet-echo cleanup is unchanged.
+
 ```python
 from mnemosyne.core.beam import BeamMemory
 
@@ -405,7 +409,7 @@ hermes memory status
 
 Do **not** use `hermes tools disable memory`: that disables the memory toolset, including provider tools. In current Hermes versions, built-in memory and an external provider are separate mechanisms; `hermes memory off` disables the external provider only. Keep existing built-in memory as a rollback/reference point during a transition and confirm the active provider with `hermes memory status`.
 
-See [docs/hermes-integration.md](docs/hermes-integration.md) for the full setup guide.
+See [docs/hermes-integration.md](docs/hermes-integration.md) for the full setup guide. For multiple Hermes profiles, agent teams, or group chats (Telegram, SimpleX, etc.), see [Multiple Profiles, Agent Teams, and Group Chats](docs/hermes-integration.md#multiple-profiles-agent-teams-and-group-chats).
 
 ### Tool discovery
 
