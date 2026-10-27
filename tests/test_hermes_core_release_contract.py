@@ -4,7 +4,6 @@ import ast
 import importlib
 import importlib.util
 import os
-import re
 import subprocess
 import sys
 import textwrap
@@ -12,7 +11,9 @@ import zipfile
 from pathlib import Path
 
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 from packaging.version import Version
+import yaml
 
 try:
     import tomllib
@@ -21,10 +22,9 @@ except ImportError:  # Python 3.10
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_INIT = ROOT / "mnemosyne" / "__init__.py"
-HERMES_PROJECTS = (
-    ROOT / "integrations" / "hermes" / "pyproject.toml",
-    ROOT / "integrations" / "hermes-catalog" / "pyproject.toml",
-)
+STANDALONE_PROJECT = ROOT / "integrations" / "hermes" / "pyproject.toml"
+CATALOG_PROJECT = ROOT / "integrations" / "hermes-catalog" / "pyproject.toml"
+STANDALONE_CORE_FLOOR = "4.0.0"
 LEGACY_HERMES_MANIFEST = ROOT / "integrations" / "hermes" / "plugin.yaml"
 CORE_HERMES_MANIFEST = ROOT / "hermes_memory_provider" / "plugin.yaml"
 REQUIRED_CORE_API = (
@@ -55,39 +55,69 @@ def _core_version() -> str:
     raise AssertionError("mnemosyne.__version__ not found")
 
 
-def _mnemosyne_memory_specs(project: Path) -> list[str]:
-    """Collect core dependency specifications from one project file."""
+def _mnemosyne_memory_specs(project: Path) -> dict[str, list[Requirement]]:
+    """Keep parsed Core requirements associated with their dependency group."""
     data = tomllib.loads(project.read_text(encoding="utf-8"))
-    specs = list(data["project"].get("dependencies", []))
-    for values in data["project"].get("optional-dependencies", {}).values():
-        specs.extend(values)
-    return [spec for spec in specs if re.match(r"mnemosyne-memory(?:\[[^]]+\])?", spec)]
+    groups = {"base": data["project"].get("dependencies", [])}
+    groups.update(data["project"].get("optional-dependencies", {}))
+    return {group: _core_requirements(specs) for group, specs in groups.items()}
 
 
-def test_hermes_packages_require_the_current_core_api_release() -> None:
-    """Require every Hermes package surface to pin the current core API release."""
+def _core_requirements(specs: list[str]) -> list[Requirement]:
+    """Parse dependency declarations while allowing unrelated packages."""
+    requirements = [Requirement(spec) for spec in specs]
+    return [r for r in requirements if canonicalize_name(r.name) == "mnemosyne-memory"]
+
+
+def _assert_core_requirement(requirements: list[Requirement], expected: str) -> None:
+    """Require one exact Core contract, including extras and parsed specifiers."""
+    assert len(requirements) == 1, requirements
+    actual, wanted = requirements[0], Requirement(expected)
+    assert canonicalize_name(actual.name) == canonicalize_name(wanted.name)
+    assert actual.extras == wanted.extras, (actual, wanted)
+    assert actual.specifier == wanted.specifier, (actual, wanted)
+
+
+def test_hermes_packages_require_their_supported_core_api_release() -> None:
+    """Standalone prerelease support and catalog promotion have separate floors."""
     core_version = _core_version()
     parsed_version = Version(core_version)
-    for project in HERMES_PROJECTS:
-        specs = _mnemosyne_memory_specs(project)
-        assert specs, project
-        for spec in specs:
-            requirement = Requirement(spec)
+    for project, floor, groups in (
+        (STANDALONE_PROJECT, STANDALONE_CORE_FLOOR,
+         {"base": "embeddings", "llm": "llm", "mcp": "mcp", "all": "all"}),
+        (CATALOG_PROJECT, core_version, {"base": "embeddings"}),
+    ):
+        requirements = _mnemosyne_memory_specs(project)
+        for group, extra in groups.items():
+            specs = requirements.get(group, [])
+            _assert_core_requirement(specs, f"mnemosyne-memory[{extra}]>={floor}")
+            requirement = specs[0]
+            if project == STANDALONE_PROJECT:
+                # Core is mandatory on every supported standalone environment.
+                assert requirement.marker is None, (group, requirement)
             assert parsed_version in requirement.specifier, (
                 project,
                 core_version,
-                spec,
+                requirement,
             )
-            assert any(
-                item.operator == ">=" and item.version == core_version
-                for item in requirement.specifier
-            ), (project, core_version, spec)
-    assert f"mnemosyne-memory>={core_version}" in LEGACY_HERMES_MANIFEST.read_text(
-        encoding="utf-8"
+    manifest = yaml.safe_load(LEGACY_HERMES_MANIFEST.read_text(encoding="utf-8"))
+    _assert_core_requirement(
+        _core_requirements(manifest.get("pip_dependencies", [])),
+        f"mnemosyne-memory[embeddings]>={STANDALONE_CORE_FLOOR}",
     )
     assert f"version: {core_version}" in CORE_HERMES_MANIFEST.read_text(
         encoding="utf-8"
     )
+
+
+def test_standalone_core_requirements_admit_final_without_admitting_betas() -> None:
+    """Every extra must require Core 4.0.0 final, so no install pairs 0.7.7 with a beta."""
+    for requirements in _mnemosyne_memory_specs(STANDALONE_PROJECT).values():
+        for requirement in requirements:
+            for version in ("4.0.0", "4.0.1"):
+                assert Version(version) in requirement.specifier, (requirement, version)
+            for version in ("3.15.1", "4.0.0b5", "4.0.0b6", "4.0.0rc1"):
+                assert Version(version) not in requirement.specifier, (requirement, version)
 
 
 def test_hermes_required_core_api_is_present() -> None:

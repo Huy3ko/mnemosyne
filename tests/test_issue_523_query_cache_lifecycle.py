@@ -281,21 +281,51 @@ def test_reload_over_max_size_trims_oldest_rows(cache_db: Path):
         reloaded.close()
 
 
-def test_row_without_readable_insert_time_is_dropped_on_load(cache_db: Path):
-    opaque = _opaque("undated")
+@pytest.mark.parametrize("journal", ["wal", "delete"])
+@pytest.mark.parametrize("opaque", [False, True], ids=["semantic", "opaque"])
+@pytest.mark.parametrize(
+    "created_at", [None, "", "not-a-timestamp"], ids=["null", "empty", "invalid"]
+)
+def test_row_without_readable_insert_time_is_dropped_on_load(
+    cache_db: Path, monkeypatch, journal: str, opaque: bool, created_at: str | None
+):
+    monkeypatch.setenv("MNEMOSYNE_JOURNAL_MODE", journal)
+    key = _opaque("undated") if opaque else "alpha beta"
     cache = QueryCache(db_path=cache_db)
-    cache.put_opaque(opaque, [{"id": "undated"}])
-    cache.put("alpha beta", [{"id": "dated"}])
-    cache.close()
-    conn = sqlite3.connect(cache_db)
-    conn.execute("UPDATE query_cache SET created_at = NULL WHERE normalized = ?", (opaque,))
-    conn.commit()
-    conn.close()
+    try:
+        if opaque:
+            cache.put_opaque(key, [{"id": "undated"}])
+        else:
+            cache.put(key, [{"id": "undated"}])
+        cache.put("dated query", [{"id": "dated"}])
+    finally:
+        cache.close()
+
+    with sqlite3.connect(cache_db) as conn:
+        conn.execute(
+            "UPDATE query_cache SET created_at = ? WHERE normalized = ?",
+            (created_at, key),
+        )
 
     reloaded = QueryCache(db_path=cache_db)
     try:
-        assert reloaded.get_opaque(opaque) is None
-        assert reloaded.get("alpha beta") == [{"id": "dated"}]
-        assert _rows(cache_db) == ["alpha beta"]
+        assert reloaded._conn is not None
+        assert reloaded._conn.in_transaction is False
+        if opaque:
+            assert reloaded.get_opaque(key) is None
+        else:
+            assert reloaded.get(key) is None
+        assert key not in reloaded._insert_times
+        assert reloaded.get("dated query") == [{"id": "dated"}]
+        assert _rows(cache_db) == ["dated query"]
+
+        # Cleanup must commit and release the write lock for another process.
+        with sqlite3.connect(cache_db, timeout=0.1) as other:
+            other.execute(
+                "INSERT INTO query_cache (normalized, results_json) VALUES (?, ?)",
+                ("independent", "[]"),
+            )
+        assert reloaded._conn.in_transaction is False
+        assert _rows(cache_db) == ["dated query", "independent"]
     finally:
         reloaded.close()

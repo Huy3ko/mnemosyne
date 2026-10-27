@@ -177,7 +177,7 @@ def _cleanup_committed_pending_claim(claim_path: Path) -> Optional[str]:
 
 from datetime import datetime, timedelta, timezone
 
-# Mnemosyne core is installed via pip (mnemosyne-memory>=3.11.1 dependency),
+# Mnemosyne core is installed via the declared package dependency,
 # but keep imports lazy so installer/status CLI commands still work in broken
 # or partially-installed environments.
 try:
@@ -261,7 +261,7 @@ except Exception as _persona_import_exc:  # pragma: no cover - graceful import f
         def _with_persona_block(self, base: str) -> str:
             return base
 
-__version__ = "0.7.6"
+__version__ = "0.7.7"
 
 logger = logging.getLogger(__name__)
 
