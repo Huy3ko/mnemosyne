@@ -1258,6 +1258,61 @@ class TestModelSelectionEnv:
             for message in messages
         ), messages
 
+    def _stub_backends(self, monkeypatch, model_path, loader_calls):
+        """Stand in for the real backends so _load_llm can run without a model."""
+        monkeypatch.setattr(local_llm, "LLM_ENABLED", True)
+        monkeypatch.setattr(local_llm, "_llm_instance", None)
+        monkeypatch.setattr(local_llm, "_llm_backend", None)
+        monkeypatch.setattr(local_llm, "_llm_available", None)
+        monkeypatch.setattr(local_llm, "_load_llm", REAL_LOAD_LLM)
+
+        def fake_llamacpp(selected):
+            loader_calls.append(selected)
+            return model_path
+
+        monkeypatch.setattr(local_llm, "_load_llm_llamacpp", fake_llamacpp)
+        monkeypatch.setattr(
+            local_llm, "_load_llm_ctransformers", lambda selected: None
+        )
+
+    def test_load_llm_hands_the_cached_selection_to_the_backend(
+        self, monkeypatch, tmp_path
+    ):
+        """The seam from selection to loading: a cache hit hands over its own path."""
+        cache_dir = self._cache(monkeypatch, tmp_path)
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "cached.gguf").write_bytes(b"gguf")
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "cached.gguf")
+        calls = []
+        self._fake_hub(monkeypatch, calls=calls)
+        sentinel = object()
+        loader_calls = []
+        self._stub_backends(monkeypatch, sentinel, loader_calls)
+
+        assert local_llm._load_llm() is sentinel
+        assert loader_calls == [cache_dir / "cached.gguf"]
+        assert calls == []
+        assert local_llm._llm_backend == "llamacpp"
+
+    def test_load_llm_hands_the_downloaded_selection_to_the_backend(
+        self, monkeypatch, tmp_path
+    ):
+        """A miss downloads first, and the backend receives that same path."""
+        self._cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "fetched.gguf")
+        downloads = []
+        self._fake_hub(monkeypatch, calls=downloads)
+        sentinel = object()
+        loader_calls = []
+        self._stub_backends(monkeypatch, sentinel, loader_calls)
+
+        assert local_llm._load_llm() is sentinel
+        expected = local_llm._model_cache_path("someone/other-gguf", "fetched.gguf")
+        assert loader_calls == [expected]
+        assert expected.exists()
+        assert len(downloads) == 1
+
     def test_parent_directory_filename_is_rejected(self, monkeypatch, tmp_path):
         self._cache(monkeypatch, tmp_path)
         monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "../other-repo/model.gguf")
