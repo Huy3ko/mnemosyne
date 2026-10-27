@@ -92,19 +92,21 @@ PRESERVATION_CASES = [
     (' [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order',
      ' [Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ramen order'),
 ]
-# Relay can include blank-line [New message] markers inside historical
-# backfill. Only the last separator precedes the current user message.
-MULTI_SEPARATOR_CASES = [
-    ('[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] what time is it',
-     'what time is it'),
-    ('[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] [Bob]',
-     ''),
-    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n\n[New message]\n[Bob] ramen order  ',
-     'ramen order  '),
-    ('[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Recent channel messages]\n[Carol] earlier\n\n[New message]\n[Alice] ramen order',
-     'ramen order'),
+# Identical bytes can put the extra separator in history OR the current body.
+# Do not guess either boundary: nested envelopes and legitimate bodies survive.
+AMBIGUOUS_BACKFILL_QUERIES = [
+    '[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] what time is it',
+    '[Recent channel messages]\n[Bob] older\n\n[New message]\n[Carol] follow-up\n\n[New message]\n[Alice] [Bob]',
+    '[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] what ramen means\n\n[New message]\n[Bob] ramen order  ',
+    '[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Recent channel messages]\n[Carol] earlier\n\n[New message]\n[Alice] ramen order',
+    '[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] keep my question\n\n[New message]\n',
+    '[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] ＡＢＣ café\t \n\n[New message]\n[TODO] keep this too  ',
+    # Adjacent markers can share a newline; counting non-overlapping matches
+    # would miss the second boundary and still discard user text.
+    '[Recent channel messages]\n[Bob] earlier\n\n[New message]\n\n[New message]\n[Alice] ramen order',
 ]
-CASES += PRESERVATION_CASES + MULTI_SEPARATOR_CASES
+AMBIGUOUS_BACKFILL_CASES = [(query, query) for query in AMBIGUOUS_BACKFILL_QUERIES]
+CASES += PRESERVATION_CASES + AMBIGUOUS_BACKFILL_CASES
 
 
 @pytest.mark.parametrize("query,expected", CASES)
@@ -230,9 +232,10 @@ def test_prefetch_preserves_body_markers(provider, query, expected):
     p.prefetch(query)
     assert [q for q, _ in p._beam.queries] == [expected]
 
-@pytest.mark.parametrize("query,expected", [case for case in MULTI_SEPARATOR_CASES if case[1]])
-def test_prefetch_uses_last_backfill_separator(provider, query, expected):
-    """Historical messages separated by markers never reach Beam prefetch."""
+
+@pytest.mark.parametrize("query,expected", AMBIGUOUS_BACKFILL_CASES)
+def test_prefetch_preserves_ambiguous_backfill(provider, query, expected):
+    """Text-only collisions must not silently truncate the current body."""
     _, _, p = provider
     p.prefetch(query)
     assert [q for q, _ in p._beam.queries] == [expected]
@@ -241,7 +244,6 @@ def test_prefetch_uses_last_backfill_separator(provider, query, expected):
 @pytest.mark.parametrize("query", [
     "[Alice] [Bob]", "[Alice] !?", "", " \t",
     "[Recent channel messages]\n[Bob] earlier\n\n[New message]\n[Alice] [Bob]",
-    MULTI_SEPARATOR_CASES[1][0],
 ])
 def test_explicit_recall_empty_calls_no_sources(provider, query):
     _, _, p = provider
@@ -255,7 +257,7 @@ def test_explicit_recall_empty_calls_no_sources(provider, query):
 @pytest.mark.parametrize("explain", [False, True])
 @pytest.mark.parametrize("query,expected", [
     ("[Alice] ＡＢＣ ramen  ", "ＡＢＣ ramen  "),
-] + PRESERVATION_CASES[:4])
+] + PRESERVATION_CASES[:4] + AMBIGUOUS_BACKFILL_CASES)
 def test_explicit_recall_preserves_suffix_and_surface_query(provider, explain, query, expected):
     _, _, p = provider
     surface = FakeBeam()
@@ -275,7 +277,7 @@ def test_explicit_recall_preserves_suffix_and_surface_query(provider, explain, q
 @pytest.mark.parametrize("query,expected", [
     ("[Recent channel messages]\n[Bob] lunch?\n\n[New message]\n[Alice] what ramen does user order",
      "what ramen does user order"),
-] + PRESERVATION_CASES + [case for case in MULTI_SEPARATOR_CASES if case[1]])
+] + PRESERVATION_CASES + AMBIGUOUS_BACKFILL_CASES)
 def test_explicit_recall_uses_exact_query(provider, query, expected):
     """Recall preserves body markers while removing a recognized outer envelope."""
     _, _, p = provider

@@ -120,18 +120,22 @@ def sanitize_prefetch_query(query: str) -> str:
     as no topical query.
 
     A recent-channel envelope must start with the exact header, contain
-    nonempty history, and end at the last blank-line-delimited marker.
-    Everything after the last delimiter is treated as the current body:
-    markers inside historical messages must not leak other speakers' text
-    into recall. A literal identical delimiter inside the current body is
-    ambiguous without out-of-band metadata and also acts as a boundary.
+    nonempty history, and have exactly one blank-line-delimited marker.
+    With multiple markers, history and current-body text are indistinguishable:
+    choosing the first can retain history; choosing the last can delete body
+    text. Keep such inputs intact rather than guess. Reliable removal for
+    those inputs requires an out-of-band current body or escaped serialization.
     This is a serialization convention, not authentication; other channel
     context formats are conservatively retained.
     """
     original = query or ""
     if original.startswith(_BACKFILL_HEADER):
-        marker = original.rfind(_BACKFILL_MARKER, len(_BACKFILL_HEADER))
-        if marker >= 0 and original[len(_BACKFILL_HEADER):marker].strip():
+        marker = original.find(_BACKFILL_MARKER, len(_BACKFILL_HEADER))
+        if (
+            marker >= 0
+            and marker == original.rfind(_BACKFILL_MARKER, len(_BACKFILL_HEADER))
+            and original[len(_BACKFILL_HEADER):marker].strip()
+        ):
             original = original[marker + len(_BACKFILL_MARKER):]
     offset = 0
     while offset < len(original) and original[offset].isspace():
