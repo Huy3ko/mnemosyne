@@ -2798,7 +2798,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # (working / init-failed-visible / skip-context-silent).
             base = (
                 "# Mnemosyne Memory\n"
-                "Active native local memory. Mnemosyne is primary; the legacy memory tool is deprecated for durable storage.\n"
+                "Active native local memory. Mnemosyne is primary; the legacy memory tool is deprecated for bulk durable storage. "
+                "Small standing rules and context anchors may stay in the always-injected memory "
+                "tier, a supported complementary tier (bounded, loaded per session); this exception "
+                "takes precedence over general storage guidance.\n"
                 "Use mnemosyne_recall for durable facts/preferences before asking the user to repeat old context.\n"
                 "Before writing durable memory, choose the narrowest layer: "
                 "mnemosyne_remember for ordinary facts/preferences/insights; "
@@ -5040,7 +5043,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                             "episodic_memory": cur.execute("SELECT COUNT(*) FROM episodic_memory").fetchone()[0],
                             "facts": cur.execute("SELECT COUNT(*) FROM facts").fetchone()[0],
                         }
-                        result["active_provider_orphan_diagnostics"] = _memory_orphan_diagnostics(con)
+                        result["active_provider_orphan_diagnostics"] = {
+                            **_memory_orphan_diagnostics(con),
+                            # PRAGMA foreign_keys is connection-local, not DB state.
+                            "foreign_keys_connection": "separate_diagnostic_connection",
+                        }
                     finally:
                         con.close()
                     try:

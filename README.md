@@ -224,6 +224,10 @@ work_mem.remember("Sprint review on Friday")
 
 ### Advanced: BEAM Direct Access
 
+When consolidation uses an OpenAI-compatible LLM endpoint (`MNEMOSYNE_LLM_BASE_URL`),
+Markdown bullet facts in its summaries are preserved. Prompt/token cleanup and
+reasoning safeguards still apply; local GGUF bullet-echo cleanup is unchanged.
+
 ```python
 from mnemosyne.core.beam import BeamMemory
 

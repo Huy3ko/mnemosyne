@@ -34,7 +34,7 @@ supported-desktop entry paths or their missing-dependency diagnostics.
 
 This source change is **not a package release**. Published `mnemosyne-hermes`
 `0.7.6` does not contain these guards. The current catalog bounds remain
-`mnemosyne-hermes>=0.7.6,<0.8` and `mnemosyne-memory[embeddings]>=4.0.0b5`;
+`mnemosyne-hermes>=0.7.6,<0.8` and `mnemosyne-memory[embeddings]>=4.0.0b6`;
 the Core ONNX Runtime ceiling remains unchanged.
 
 Before shipping the complete standalone/catalog guarantee:
