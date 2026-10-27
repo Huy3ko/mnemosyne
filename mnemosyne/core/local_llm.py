@@ -605,8 +605,8 @@ def _sanitize_reasoning_output(text: str):
     ).strip()
 
 
-def _clean_output(text: str):
-    """Strip assistant tokens and extra whitespace from model output."""
+def _clean_output(text: str, *, preserve_bullets: bool = False):
+    """Clean model output, optionally retaining remote summary bullet content."""
     text = _sanitize_reasoning_output(text)
     if _is_invalid_reasoning_output(text):
         return text
@@ -615,7 +615,9 @@ def _clean_output(text: str):
     text = re.sub(r"^(Summarize the following memories.*?[.!?:]\s*)", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"^(Preserve facts.*?[.!?:]\s*)", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"^Source:.*?\n", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"^\s*[-*]\s.*\n", "", text, flags=re.MULTILINE)
+    if not preserve_bullets:
+        # Small local models may echo the prompt's memory bullet lines.
+        text = re.sub(r"^\s*[-*]\s.*\n", "", text, flags=re.MULTILINE)
     return text.strip()
 
 
@@ -991,7 +993,7 @@ def _summarize_memories(
         if LLM_ENABLED and LLM_BASE_URL and not os.environ.get("MNEMOSYNE_FORCE_LOCAL", "").lower() in ("1", "true", "yes"):
             raw = _call_remote_llm(prompt)
             if raw:
-                cleaned = _clean_output(raw)
+                cleaned = _clean_output(raw, preserve_bullets=True)
                 if _is_invalid_reasoning_output(cleaned):
                     return _INVALID_REASONING_OUTPUT
                 return cleaned if cleaned else None
