@@ -163,13 +163,13 @@ def test_size_eviction_of_semantic_key_does_not_reappear_after_reload(cache_db: 
         cache.put("third query", [{"id": "third"}])
         assert cache.get("first query") is None
         assert _rows(cache_db) == ["query second", "query third"]
+        assert cache.get("an unrelated question", embedding=[1.0, 0.0]) is None
     finally:
         cache.close()
 
     reloaded = QueryCache(db_path=cache_db, max_size=2)
     try:
         assert reloaded.get("first query") is None
-        assert reloaded.get("an unrelated question") is None
         assert reloaded.get("second query") == [{"id": "second"}]
         assert reloaded.get("third query") == [{"id": "third"}]
     finally:
