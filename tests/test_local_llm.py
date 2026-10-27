@@ -1213,6 +1213,27 @@ class TestModelSelectionEnv:
             local_llm._download_model()
         assert calls == []
 
+    def test_missing_absolute_selection_logs_through_load_llm(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """_load_llm() swallows the failure, so the log record is the only signal."""
+        self._cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", str(tmp_path / "absent.gguf"))
+        self._fake_hub(monkeypatch, calls=[])
+        monkeypatch.setattr(local_llm, "LLM_ENABLED", True)
+        monkeypatch.setattr(local_llm, "_llm_instance", None)
+        monkeypatch.setattr(local_llm, "_llm_available", None)
+        monkeypatch.setattr(local_llm, "_load_llm", REAL_LOAD_LLM)
+        caplog.set_level(logging.WARNING, logger=local_llm.__name__)
+
+        assert local_llm._load_llm() is None
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "MNEMOSYNE_LLM_FILE" in message and "absent.gguf" in message
+            for message in messages
+        ), messages
+
     def test_parent_directory_filename_is_rejected(self, monkeypatch, tmp_path):
         self._cache(monkeypatch, tmp_path)
         monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "../other-repo/model.gguf")

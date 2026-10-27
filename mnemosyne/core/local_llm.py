@@ -265,7 +265,14 @@ def _download_model() -> Path:
 
     if Path(filename).is_absolute():
         # Nothing to fetch by name: the Hub needs a relative filename, and the
-        # selection already said exactly which file it means.
+        # selection already said exactly which file it means. Log first, because
+        # _load_llm() swallows this exception, so the record is the only
+        # diagnostic the operator ever sees.
+        logger.warning(
+            "MNEMOSYNE_LLM_FILE=%s is an absolute path that does not exist; "
+            "an absolute selection cannot be downloaded by name.",
+            filename,
+        )
         raise ValueError(
             "MNEMOSYNE_LLM_FILE is an absolute path, so the file must already "
             f"exist; {filename!r} is not there and cannot be downloaded."
