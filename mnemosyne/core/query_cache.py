@@ -393,7 +393,10 @@ class QueryCache:
             )
             self._conn.commit()
         except Exception:
-            pass
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
     
     def close(self):
         """Close the SQLite connection and release resources."""

@@ -169,10 +169,76 @@ def test_size_eviction_of_semantic_key_does_not_reappear_after_reload(cache_db: 
     reloaded = QueryCache(db_path=cache_db, max_size=2)
     try:
         assert reloaded.get("first query") is None
+        assert reloaded.get("an unrelated question") is None
         assert reloaded.get("second query") == [{"id": "second"}]
         assert reloaded.get("third query") == [{"id": "third"}]
     finally:
         reloaded.close()
+
+
+@pytest.mark.parametrize("journal", ["wal", "delete"])
+@pytest.mark.parametrize("failure", ["second_delete", "commit"])
+def test_failed_expiry_cleanup_rolls_back_before_next_put(
+    cache_db: Path, monkeypatch, journal: str, failure: str
+):
+    monkeypatch.setenv("MNEMOSYNE_JOURNAL_MODE", journal)
+    cache = QueryCache(db_path=cache_db, ttl_seconds=60)
+    first, second = "alpha beta", "delta gamma"
+    try:
+        cache.put(first, [{"id": "first"}])
+        cache.put(second, [{"id": "second"}])
+        if failure == "second_delete":
+            # The first DELETE succeeds; a later DELETE in executemany aborts.
+            cache._conn.execute(
+                "CREATE TRIGGER fail_second BEFORE DELETE ON query_cache "
+                "WHEN OLD.normalized = 'delta gamma' "
+                "BEGIN SELECT RAISE(ABORT, 'second delete failed'); END"
+            )
+        else:
+            # SQLite allows the DELETE, then rejects COMMIT on the deferred FK.
+            cache._conn.execute("PRAGMA foreign_keys=ON")
+            cache._conn.execute("CREATE TABLE cleanup_parent (id INTEGER PRIMARY KEY)")
+            cache._conn.execute(
+                "CREATE TABLE cleanup_child (parent_id INTEGER REFERENCES cleanup_parent(id) "
+                "DEFERRABLE INITIALLY DEFERRED)"
+            )
+            cache._conn.execute(
+                "CREATE TRIGGER fail_commit AFTER DELETE ON query_cache "
+                "BEGIN INSERT INTO cleanup_child (parent_id) VALUES (999); END"
+            )
+        cache._conn.commit()
+        # Advance only the Python TTL clock; the real SQLite rows stay intact.
+        now = time.time()
+        monkeypatch.setattr(query_cache_module.time, "time", lambda: now + 120)
+        cache.put("epsilon zeta", [{"id": "new"}])
+
+        assert cache._conn.in_transaction is False
+        assert _rows(cache_db) == [first, second, "epsilon zeta"]
+        # An independent writer must not be held behind the failed cleanup.
+        with sqlite3.connect(cache_db, timeout=0.1) as other:
+            other.execute(
+                "INSERT INTO query_cache (normalized, results_json) VALUES (?, ?)",
+                ("independent", "[]"),
+            )
+        cache.put("iota kappa", [{"id": "later"}])
+        assert cache._conn.in_transaction is False
+        assert _rows(cache_db) == [first, second, "epsilon zeta", "independent", "iota kappa"]
+    finally:
+        cache.close()
+
+
+def test_cleanup_keeps_best_effort_behavior_when_rollback_fails(cache_db: Path, monkeypatch):
+    cache = QueryCache(db_path=cache_db, ttl_seconds=60)
+    try:
+        cache.put("alpha beta", [{"id": "old"}])
+        cache._conn.close()
+        now = time.time()
+        monkeypatch.setattr(query_cache_module.time, "time", lambda: now + 120)
+        # A closed real connection rejects both DELETE and ROLLBACK.
+        cache.put("gamma delta", [{"id": "new"}])
+        assert cache.get("gamma delta") == [{"id": "new"}]
+    finally:
+        cache.close()
 
 
 def test_eviction_after_reload_drops_oldest_restored_entry(cache_db: Path):
