@@ -10,6 +10,14 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ### Fixed
 - **Local model selection honours `MNEMOSYNE_LLM_FILE` and `MNEMOSYNE_LLM_REPO` independently (#1242).** The filename override was gated on the repository override, so setting either one alone was silently ignored and the loader kept the shipped GGUF. Both are now resolved per call, applying immediately, and cache entries are keyed by the pair so one repository's cached file cannot satisfy a selection pointing at another. A filename containing a parent-directory component is rejected, an absolute selection must already exist rather than be fetched by name, and a failed download logs the resolved repository, filename and cache directory before re-raising. Existing flat cache entries for the shipped model keep working untouched, and an already-loaded model is never replaced.
 
+### Standalone Hermes 0.7.7
+- Adds explicit, consent-based legacy PM adoption preserving exact package versions and chosen extras (#1217); this is partial work for #1169, which remains open pending release acceptance.
+- Reports PM ownership from installation metadata without importing Core or claiming runtime/autosave health (#1223).
+- Releases worker-thread SQLite handles through the side-effect-free Core cleanup API (#1228); requires Core >=4.0.0 across base and optional dependencies, so no install pairs it with a beta.
+- Refuses excluded Android/Emscripten native entry paths before activation (#1230), and logs wrapper Python mismatch diagnostics (#635).
+- Clarifies media-hint ownership (#1225), foreign-key diagnostic connection provenance (#1248), and durable-memory guidance (#835).
+- Synchronizes the standalone runtime, package and both manifests at 0.7.7. Core version is unchanged; the catalog pin moves to 0.7.7 after publication.
+
 ## [4.0.0] - 2026-10-26
 
 ### Fixed

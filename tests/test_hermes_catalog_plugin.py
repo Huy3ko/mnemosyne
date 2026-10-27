@@ -41,7 +41,7 @@ def test_manifest_is_an_exclusive_memory_provider_named_like_the_wrapper():
     m = _manifest()
     assert m["name"] == "mnemosyne", "catalog install dir must match the wrapper's plugin name"
     assert m["kind"] == "exclusive", "memory providers must not be imported by the general loader"
-    assert m["version"] == "0.7.6"
+    assert m["version"] == "0.7.7"
     assert m["provides_hooks"] == [] and m["provides_middleware"] == [] and m["requires_env"] == []
 
 
@@ -103,7 +103,7 @@ def test_wrapper_pyproject_declares_the_package_and_is_not_a_distribution():
 
     deps = {req.name: req for req in map(Requirement, data["project"]["dependencies"])}
     provider, core = deps["mnemosyne-hermes"], deps["mnemosyne-memory"]
-    assert str(provider.specifier) == "<0.8,>=0.7.6"
+    assert str(provider.specifier) == "<0.8,>=0.7.7"
     assert str(core.specifier) == ">=4.0.0" and core.extras == {"embeddings"}
     assert provider.marker is not None and core.marker is not None
     assert str(provider.marker) == str(core.marker)
