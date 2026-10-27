@@ -1155,6 +1155,30 @@ class TestModelSelectionEnv:
         other = local_llm._model_cache_path("someone/other-gguf", "shared.gguf")
         assert other != cache_dir / "shared.gguf"
 
+    def test_cached_same_filename_in_two_repos_hits_its_own_cache(
+        self, monkeypatch, tmp_path
+    ):
+        """Each repo keeps its own copy, and a second lookup downloads nothing."""
+        cache_dir = self._cache(monkeypatch, tmp_path)
+        calls = []
+        self._fake_hub(monkeypatch, calls=calls)
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "shared.gguf")
+
+        shipped = local_llm._download_model()
+        monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
+        other = local_llm._download_model()
+
+        assert shipped == cache_dir / "shared.gguf"
+        assert other != shipped
+        assert shipped.exists() and other.exists()
+        assert len(calls) == 2
+
+        # Both are now cached, so neither selection may reach the network again.
+        assert local_llm._model_path() == other
+        monkeypatch.delenv("MNEMOSYNE_LLM_REPO", raising=False)
+        assert local_llm._model_path() == shipped
+        assert len(calls) == 2
+
     def test_nested_filename_lands_where_the_lookup_expects(self, monkeypatch, tmp_path):
         """A filename with a separator must not be nested twice on download."""
         cache_dir = self._cache(monkeypatch, tmp_path)
@@ -1259,6 +1283,21 @@ class TestModelSelectionEnv:
         monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "")
 
         assert local_llm._resolve_model_selection() == local_llm._SHIPPED_MODEL
+
+    def test_blank_repo_keeps_the_shipped_repo_with_a_custom_file(self, monkeypatch):
+        """A blank value is unset, so the other half of the pair still applies."""
+        shipped_repo, _ = local_llm._SHIPPED_MODEL
+        monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "   ")
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "custom.gguf")
+
+        assert local_llm._resolve_model_selection() == (shipped_repo, "custom.gguf")
+
+    def test_blank_file_keeps_the_shipped_file_with_a_custom_repo(self, monkeypatch):
+        _, shipped_file = local_llm._SHIPPED_MODEL
+        monkeypatch.setenv("MNEMOSYNE_LLM_REPO", "someone/other-gguf")
+        monkeypatch.setenv("MNEMOSYNE_LLM_FILE", "  ")
+
+        assert local_llm._resolve_model_selection() == ("someone/other-gguf", shipped_file)
 
     def test_variable_set_after_import_is_honoured(self, monkeypatch, tmp_path):
         cache_dir = self._cache(monkeypatch, tmp_path)
