@@ -145,6 +145,11 @@ def _hygiene_delete_cascade(
         ).fetchone()
         if gists_table is not None:
             cursor.execute("DELETE FROM gists WHERE memory_id = ?", (memory_id,))
+        from mnemosyne.core.beam import BeamMemory
+
+        if not BeamMemory._memory_has_surviving_parent(cursor, memory_id):
+            BeamMemory._delete_derived_memory_rows(cursor, memory_id)
+            BeamMemory._delete_orphaned_legacy_mirror(cursor, memory_id)
     except Exception:
         cursor.execute("ROLLBACK TO SAVEPOINT hygiene_delete")
         cursor.execute("RELEASE hygiene_delete")
@@ -739,7 +744,9 @@ def clean_noise(
         dry_run: If True, no changes are made; returns what *would* happen.
 
     Returns:
-        ``CleanResult`` with counts and any errors.
+        ``CleanResult`` with counts and any errors. Applied archives of rows
+        already marked archived count as kept, without a new audit entry.
+        Dry-run counts remain candidate-based (no current-row inspection).
     """
     result = CleanResult()
 
@@ -817,6 +824,18 @@ def clean_noise(
                     # preserved in metadata so restore_archived can recover
                     # the exact value instead of guessing.
                     meta = json.loads(original_metadata) if original_metadata else {}
+                    # Match restore's existing truthy archive-marker semantics.
+                    # Reusing candidates must not replace the first transition's
+                    # restore value/provenance or append a second archive event.
+                    if meta.get("_archived"):
+                        cursor.execute("RELEASE hygiene_candidate")
+                        result.kept += 1
+                        continue
+                    # An unarchived row with a saved value is inconsistent.
+                    # Preserve that evidence (including zero/null), rather than
+                    # silently choosing between it and the current importance.
+                    if "_original_importance" in meta:
+                        raise ValueError("Unarchived row has saved archive importance")
                     # Fetch and preserve original importance before zeroing.
                     cursor.execute(
                         f"SELECT importance FROM {c.table_name} WHERE id = ?",

@@ -224,6 +224,10 @@ work_mem.remember("Sprint review on Friday")
 
 ### Advanced: BEAM Direct Access
 
+When consolidation uses an OpenAI-compatible LLM endpoint (`MNEMOSYNE_LLM_BASE_URL`),
+Markdown bullet facts in its summaries are preserved. Prompt/token cleanup and
+reasoning safeguards still apply; local GGUF bullet-echo cleanup is unchanged.
+
 ```python
 from mnemosyne.core.beam import BeamMemory
 
@@ -360,6 +364,17 @@ See [docs/configuration.md#custom-embedding-models](docs/configuration.md#custom
 
 When used with Hermes Agent, Mnemosyne exposes provider tools for the memory lifecycle, lifecycle hooks for automatic context injection, and MCP support.
 
+`mnemosyne_resolve_conflicts` remains gated off by default. Its `dry_run`
+argument defaults to `false` (apply): use `dry_run=true` for deterministic
+preview, with no LLM calls or reflection reservation. Explicit
+`dry_run=true,llm_eval=true` previews LLM verdicts without superseding memories
+or emitting an apply audit, but can incur costs, write cost records and consume
+one reflection invocation. Evaluated previews now obey exhausted/cron guards
+instead of bypassing them. Both concrete Hermes provider copies expose these
+default-false arguments during migration; no core/MCP schema expansion is
+implied. See the [provider resolver contract](integrations/hermes/README.md#configuration)
+for gates, conservative reservation and cost-logging limits.
+
 > **For the full Hermes setup guide, see [docs/hermes-integration.md](docs/hermes-integration.md).** That is the canonical, most up-to-date reference.
 
 ### Install profile comparison
@@ -394,7 +409,7 @@ hermes memory status
 
 Do **not** use `hermes tools disable memory`: that disables the memory toolset, including provider tools. In current Hermes versions, built-in memory and an external provider are separate mechanisms; `hermes memory off` disables the external provider only. Keep existing built-in memory as a rollback/reference point during a transition and confirm the active provider with `hermes memory status`.
 
-See [docs/hermes-integration.md](docs/hermes-integration.md) for the full setup guide.
+See [docs/hermes-integration.md](docs/hermes-integration.md) for the full setup guide. For multiple Hermes profiles, agent teams, or group chats (Telegram, SimpleX, etc.), see [Multiple Profiles, Agent Teams, and Group Chats](docs/hermes-integration.md#multiple-profiles-agent-teams-and-group-chats).
 
 ### Tool discovery
 
