@@ -193,11 +193,19 @@ so cleanup also runs when the sleep pass fails. The release goes through
 `mnemosyne.core.memory` (whose import-time `init_db()` would open a default
 connection and displace the worker's handle), it is fail-soft like the rest of
 the lifecycle, and a handle whose `close()` raised stays cached so a later call
-can retry. The module ships with the core source tree for now. Against a
-released core that predates it, cleanup skips through the same fail-soft path;
-the `mnemosyne-memory` minimum moves once that core is published.
+can retry. The module first shipped in Core `4.0.0b6`; the standalone `0.7.7` package
+requires Core `4.0.0` final. Legacy pairs retained through explicit
+adoption can predate that module; their cleanup keeps the fail-soft fallback.
 
 ---
+
+## Standalone release 0.7.7
+
+This release includes the explicit legacy PM adoption path from #1217. The
+minimum Core is `4.0.0` final, and every optional Core extra uses the same floor,
+so a fresh install never pairs this provider with a beta.
+Adoption retains the verified prior package pair and does not upgrade it to Core 4.
+Release-artifact acceptance and the #1169 gate remain separate from preparation.
 
 ## Quickstart
 
@@ -290,12 +298,12 @@ mnemosyne-hermes install --dry-run          # shows which interpreter would be u
 symlink install, and selects the site-packages a `--mode wrapper` install imports
 from.
 
-#### Explicit legacy PM adoption (development, not yet released)
+#### Explicit legacy PM adoption (0.7.7 candidate; not yet published)
 
 This opt-in flow is for a verified existing legacy package-symlink installation
 whose exact core/provider pair should become owned by Hermes' package manager
 (PM). It requires a supporting Hermes PM installation and an installer from this
-checkout or a future SDK release containing `--adopt-pm`. Published
+checkout or the prepared 0.7.7 candidate containing `--adopt-pm`. Published
 `mnemosyne-hermes` **0.7.6 does not contain this option**. This is not a replacement
 for normal installation or Docker/persistent side-venv wrapper setup.
 
@@ -312,7 +320,7 @@ Use the supporting installer's standalone tool environment for the command below
 it is distinct from the **prior virtual environment** passed to `--python`.
 Do not upgrade the prior environment to obtain the installer. Here
 `/path/to/installer-venv/bin/mnemosyne-hermes` means the console command installed
-from this checkout or that future release, not the old provider's command.
+from this checkout or the 0.7.7 candidate, not the old provider's command.
 
 First inspect the read-only plan, using the selected Hermes home's global argument
 before `install` and the explicit prior VENV's Python:
@@ -453,8 +461,8 @@ Both the standalone `mnemosyne_hermes` provider and the bundled
 `hermes_memory_provider` copy expose the same `dry_run`/`llm_eval` resolver
 arguments during migration; this is not a recommendation to install the bundled
 copy. The existing core `BeamMemory.resolve_cross_session_conflicts` signature
-supports both arguments. The current minimum core/provider pair is core 4.0.0b6
-and provider 0.7.6; no fallback retry against an incompatible core signature is performed.
+supports both arguments. The current minimum core/provider pair is core 4.0.0
+and provider 0.7.7; no fallback retry against an incompatible core signature is performed.
 
 An explicit LLM preview overrides `MNEMOSYNE_LLM_CONFLICT_DETECTION` for that
 preview only, never the default-off cross-session gate. Apply still honors the
@@ -539,7 +547,7 @@ Hermes calls `mnemosyne_recall`, finds the relevant prior failure and fix, and d
 
 If Mnemosyne's database is unavailable or disk is full, the provider logs the error and Hermes continues answering. Memory is additive: it never blocks the user.
 
-Lifecycle failures (prefetch, turn sync, session-end, cleanup) are logged and never surface as user-facing errors. The one deliberate exception is canonical-write ownership: when ownership cannot be established because the active profile mismatches or no active profile can be resolved, a canonical remember or forget returns a structured refusal (`canonical_owner_mismatch` / `canonical_profile_unavailable`) to the tool caller instead of writing an unowned row. A refusal means nothing was written; it never raises into the lifecycle.
+Lifecycle failures (prefetch, turn sync, session-end, cleanup) are logged and never surface as user-facing errors. The one deliberate exception is canonical-write ownership: when ownership cannot be established because the active profile mismatches or no active profile can be resolved, a canonical remember or forget — as well as mutating `mnemosyne_task_progress` actions (`set` and `clear`, while `get` and `list` reads remain ungated) — returns a structured refusal (`canonical_owner_mismatch` / `canonical_profile_unavailable`) to the tool caller instead of writing an unowned row. A refusal means nothing was written; it never raises into the lifecycle.
 
 ## Contributing
 
