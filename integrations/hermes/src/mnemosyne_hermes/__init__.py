@@ -3427,12 +3427,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                         else nullcontext()
                     )
                 with policy_context:
-                    # Fail-closed canonical WRITE guard (2026-09-20 incident): a
+                    # Fail-closed canonical WRITE guard (2026-09-20 incident, #1177): a
                     # session may restamp self-facts only through an instance
                     # bound to its own profile. Reads are intentionally not
                     # gated; mismatch here means a keying regression and must
                     # surface as a loud error, never a silent reroute.
-                    if tool_name in ("mnemosyne_remember_canonical", "mnemosyne_forget_canonical"):
+                    if (
+                        tool_name in ("mnemosyne_remember_canonical", "mnemosyne_forget_canonical")
+                        or (
+                            tool_name == "mnemosyne_task_progress"
+                            and str((args or {}).get("action") or "get").strip().lower() in ("set", "clear")
+                        )
+                    ):
                         _guard_err = self._canonical_write_guard(tool_name)
                         if _guard_err is not None:
                             return _guard_err
@@ -5112,6 +5118,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         task = args.get("task", "").strip()
         state = args.get("state", "").strip()
         metadata = args.get("metadata", {}) or {}
+
+        if action in ("set", "clear"):
+            _guard_err = self._canonical_write_guard("mnemosyne_task_progress")
+            if _guard_err is not None:
+                return _guard_err
 
         owner_id = self._canonical_owner()
         store = getattr(self._beam, "canonical", None)
