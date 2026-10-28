@@ -34,6 +34,7 @@ import math
 import re
 import time
 import threading
+from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from pathlib import Path
 import sqlite3
@@ -82,6 +83,9 @@ class QueryCache:
         # Thread safety
         self._lock = threading.Lock()
         self._insert_times: Dict[str, float] = {}  # normalized -> insert time for TTL
+        # Snapshot of the persisted generation owned by each in-memory entry.
+        # Cleanup must not delete a replacement written by another instance.
+        self._persisted_rows: Dict[str, tuple] = {}
         
         # Stats
         self.hits = 0
@@ -119,19 +123,26 @@ class QueryCache:
         
         # Load existing cache entries from SQLite into memory.  Each entry
         # keeps its persisted insert time, so TTL and LRU order hold across
-        # restarts.  ``created_at`` is SQLite's UTC ``CURRENT_TIMESTAMP``.
+        # restarts. Legacy rows use whole-second UTC CURRENT_TIMESTAMP;
+        # new writes retain the Python insertion clock's fractional seconds.
         try:
             cursor = self._conn.cursor()
             cursor.execute(
-                "SELECT normalized, results_json, "
-                "CAST(strftime('%s', created_at) AS REAL) AS created_epoch "
+                "SELECT normalized, embedding_json, results_json, created_at "
                 "FROM query_cache ORDER BY created_at, rowid"
             )
             undated = []
             for row in cursor.fetchall():
                 key = row["normalized"]
-                if row["created_epoch"] is None:
+                snapshot = (row["created_at"], row["embedding_json"], row["results_json"])
+                try:
+                    created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    created_epoch = created.timestamp()
+                except (ValueError, TypeError, OverflowError, OSError):
                     # No readable insert time: its age cannot be checked.
+                    self._persisted_rows[key] = snapshot
                     undated.append(key)
                     continue
                 try:
@@ -141,7 +152,8 @@ class QueryCache:
                     else:
                         self._tier1[key] = results
                         self._tier4[key] = results
-                    self._insert_times[key] = row["created_epoch"]
+                    self._insert_times[key] = created_epoch
+                    self._persisted_rows[key] = snapshot
                 except Exception:
                     pass
             with self._lock:
@@ -159,6 +171,7 @@ class QueryCache:
             self._tier4.clear()
             self._opaque.clear()
             self._insert_times.clear()
+            self._persisted_rows.clear()
             if self._conn:
                 self._conn.execute("DELETE FROM query_cache")
                 self._conn.commit()
@@ -316,13 +329,23 @@ class QueryCache:
             # SQLite backing
             if self._conn:
                 try:
+                    created_at = datetime.fromtimestamp(
+                        self._insert_times[normalized], timezone.utc
+                    ).replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+                    embedding_json = json.dumps(embedding) if embedding else None
+                    results_json = json.dumps(results)
                     self._conn.execute(
-                        "INSERT OR REPLACE INTO query_cache (normalized, embedding_json, results_json) VALUES (?, ?, ?)",
-                        (normalized, json.dumps(embedding) if embedding else None, json.dumps(results))
+                        "INSERT OR REPLACE INTO query_cache "
+                        "(normalized, embedding_json, results_json, created_at) VALUES (?, ?, ?, ?)",
+                        (normalized, embedding_json, results_json, created_at)
                     )
                     self._conn.commit()
+                    self._persisted_rows[normalized] = (created_at, embedding_json, results_json)
                 except Exception:
-                    pass
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
             
             # Evict if over max_size
             self._evict_if_needed()
@@ -337,20 +360,29 @@ class QueryCache:
             self._insert_times[key] = time.time()
             if self._conn:
                 try:
+                    created_at = datetime.fromtimestamp(
+                        self._insert_times[key], timezone.utc
+                    ).replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+                    results_json = json.dumps(results)
                     self._conn.execute(
-                        "INSERT OR REPLACE INTO query_cache (normalized, embedding_json, results_json) VALUES (?, ?, ?)",
-                        (key, None, json.dumps(results)),
+                        "INSERT OR REPLACE INTO query_cache "
+                        "(normalized, embedding_json, results_json, created_at) VALUES (?, ?, ?, ?)",
+                        (key, None, results_json, created_at),
                     )
                     self._conn.commit()
+                    self._persisted_rows[key] = (created_at, None, results_json)
                 except Exception:
-                    pass
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
             self._evict_if_needed()
     
     def _evict_if_needed(self):
         """LRU eviction if cache exceeds max_size. Also cleans TTL-expired entries.
 
-        Every key dropped here also loses its SQLite row, so an evicted
-        entry cannot come back on the next warm start.
+        Best-effort SQLite cleanup removes the persisted snapshots owned by
+        these entries, retaining any replacements written by another instance.
         """
         # First, clean up any TTL-expired entries
         now = time.time()
@@ -383,13 +415,19 @@ class QueryCache:
         self._delete_persisted(expired + to_remove)
 
     def _delete_persisted(self, keys: List[str]):
-        """Best-effort removal of SQLite rows for keys dropped from memory."""
-        if not self._conn or not keys:
+        """Remove only the persisted generations dropped from this instance."""
+        rows = []
+        for key in keys:
+            snapshot = self._persisted_rows.pop(key, None)
+            if snapshot is not None:
+                rows.append((key, *snapshot))
+        if not self._conn or not rows:
             return
         try:
             self._conn.executemany(
-                "DELETE FROM query_cache WHERE normalized = ?",
-                [(key,) for key in keys],
+                "DELETE FROM query_cache WHERE normalized = ? "
+                "AND created_at IS ? AND embedding_json IS ? AND results_json IS ?",
+                rows,
             )
             self._conn.commit()
         except Exception:

@@ -46,6 +46,101 @@ def cache_db(tmp_path: Path) -> Path:
     return tmp_path / "query_cache.db"
 
 
+@pytest.mark.parametrize("journal", ["wal", "delete"])
+@pytest.mark.parametrize("opaque", [False, True], ids=["semantic", "opaque"])
+def test_subsecond_insert_age_survives_restart(cache_db, monkeypatch, journal, opaque):
+    monkeypatch.setenv("MNEMOSYNE_JOURNAL_MODE", journal)
+    clock = [1704067200.9]
+    monkeypatch.setattr(query_cache_module.time, "time", lambda: clock[0])
+    key = _opaque("fractional") if opaque else "alpha beta"
+    cache = QueryCache(db_path=cache_db, ttl_seconds=1)
+    try:
+        # Control SQLite's whole-second wall clock as well as Python's clock.
+        cache._conn.create_function("current_timestamp", 0, lambda: "2024-01-01 00:00:00")
+        put = cache.put_opaque if opaque else cache.put
+        get = cache.get_opaque if opaque else cache.get
+        put(key, [{"id": "fresh"}])
+        clock[0] = 1704067201.01
+        assert get(key) == [{"id": "fresh"}]
+    finally:
+        cache.close()
+
+    reloaded = QueryCache(db_path=cache_db, ttl_seconds=1)
+    try:
+        get = reloaded.get_opaque if opaque else reloaded.get
+        assert get(key) == [{"id": "fresh"}]
+        clock[0] = 1704067201.91
+        assert get(key) is None
+        assert _rows(cache_db) == []
+    finally:
+        reloaded.close()
+
+
+@pytest.mark.parametrize("journal", ["wal", "delete"])
+@pytest.mark.parametrize("opaque", [False, True], ids=["semantic", "opaque"])
+@pytest.mark.parametrize("removal", ["expiry", "sweep", "size"])
+def test_stale_instance_removal_preserves_fresh_peer_row(
+    cache_db, monkeypatch, journal, opaque, removal
+):
+    monkeypatch.setenv("MNEMOSYNE_JOURNAL_MODE", journal)
+    clock = [1704067200.0]
+    monkeypatch.setattr(query_cache_module.time, "time", lambda: clock[0])
+    key = _opaque("shared") if opaque else "shared query"
+    old = QueryCache(db_path=cache_db, ttl_seconds=1000 if removal == "size" else 60, max_size=1)
+    peer = QueryCache(db_path=cache_db, ttl_seconds=60)
+    try:
+        old_put = old.put_opaque if opaque else old.put
+        peer_put = peer.put_opaque if opaque else peer.put
+        old_get = old.get_opaque if opaque else old.get
+        peer_get = peer.get_opaque if opaque else peer.get
+        old_put(key, [{"id": "old"}])
+        clock[0] = 1704067250.0
+        peer_put(key, [{"id": "fresh"}])
+        clock[0] = 1704067261.0
+        if removal == "expiry":
+            assert old_get(key) is None
+        else:
+            old.put("another request", [{"id": "other"}])
+            assert old_get(key) is None
+        assert peer_get(key) == [{"id": "fresh"}]
+    finally:
+        old.close()
+        peer.close()
+
+    reloaded = QueryCache(db_path=cache_db, ttl_seconds=60)
+    try:
+        get = reloaded.get_opaque if opaque else reloaded.get
+        assert get(key) == [{"id": "fresh"}]
+    finally:
+        reloaded.close()
+
+
+@pytest.mark.parametrize("journal", ["wal", "delete"])
+@pytest.mark.parametrize("opaque", [False, True], ids=["semantic", "opaque"])
+def test_peer_replacement_at_same_timestamp_is_not_deleted(
+    cache_db, monkeypatch, journal, opaque
+):
+    monkeypatch.setenv("MNEMOSYNE_JOURNAL_MODE", journal)
+    clock = [1704067200.5]
+    monkeypatch.setattr(query_cache_module.time, "time", lambda: clock[0])
+    key = _opaque("same-time") if opaque else "shared query"
+    old = QueryCache(db_path=cache_db, ttl_seconds=1)
+    peer = QueryCache(db_path=cache_db, ttl_seconds=60)
+    try:
+        (old.put_opaque if opaque else old.put)(key, [{"id": "old"}])
+        (peer.put_opaque if opaque else peer.put)(key, [{"id": "fresh"}])
+        clock[0] = 1704067201.6
+        assert (old.get_opaque if opaque else old.get)(key) is None
+    finally:
+        old.close()
+        peer.close()
+    reloaded = QueryCache(db_path=cache_db, ttl_seconds=60)
+    try:
+        assert (reloaded.get_opaque if opaque else reloaded.get)(key) == [{"id": "fresh"}]
+    finally:
+        reloaded.close()
+
+
 def test_fresh_entries_survive_restart_with_their_insert_time(cache_db: Path):
     opaque = _opaque("fresh")
     cache = QueryCache(db_path=cache_db, ttl_seconds=600)
