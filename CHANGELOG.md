@@ -7,6 +7,9 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ## [Unreleased]
 
+### Fixed
+- **Local model selection honours `MNEMOSYNE_LLM_FILE` and `MNEMOSYNE_LLM_REPO` independently (#1242).** The filename override was gated on the repository override, so setting either one alone was silently ignored and the loader kept the shipped GGUF. Both are now resolved per call, applying immediately, and cache entries are keyed by the pair so one repository's cached file cannot satisfy a selection pointing at another. A filename containing a parent-directory component is rejected, an absolute selection must already exist rather than be fetched by name, and a failed download logs the resolved repository, filename and cache directory before re-raising. Existing flat cache entries for the shipped model keep working untouched, and an already-loaded model is never replaced.
+
 ### Standalone Hermes 0.7.7
 - Adds explicit, consent-based legacy PM adoption preserving exact package versions and chosen extras (#1217); this is partial work for #1169, which remains open pending release acceptance.
 - Reports PM ownership from installation metadata without importing Core or claiming runtime/autosave health (#1223).
