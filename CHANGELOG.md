@@ -7,6 +7,9 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ## [Unreleased]
 
+### Fixed
+- **Local model selection honours `MNEMOSYNE_LLM_FILE` and `MNEMOSYNE_LLM_REPO` independently (#1242).** The filename override was gated on the repository override, so setting either one alone was silently ignored and the loader kept the shipped GGUF. Both are now resolved per call, applying immediately, and cache entries are keyed by the pair so one repository's cached file cannot satisfy a selection pointing at another. A filename containing a parent-directory component is rejected, an absolute selection must already exist rather than be fetched by name, and a failed download logs the resolved repository, filename and cache directory before re-raising. Existing flat cache entries for the shipped model keep working untouched, and an already-loaded model is never replaced.
+
 ### Standalone Hermes 0.7.7
 - Adds explicit, consent-based legacy PM adoption preserving exact package versions and chosen extras (#1217); this is partial work for #1169, which remains open pending release acceptance.
 - Reports PM ownership from installation metadata without importing Core or claiming runtime/autosave health (#1223).
@@ -14,6 +17,9 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 - Refuses excluded Android/Emscripten native entry paths before activation (#1230), and logs wrapper Python mismatch diagnostics (#635).
 - Clarifies media-hint ownership (#1225), foreign-key diagnostic connection provenance (#1248), and durable-memory guidance (#835).
 - Synchronizes the standalone runtime, package and both manifests at 0.7.7. Core version is unchanged; the catalog pin moves to 0.7.7 after publication.
+
+### Fixed
+- **Persisted query cache entries obey TTL and eviction across restarts (#523).** `QueryCache` warm start loaded every SQLite row without its insert time, so a restored entry never expired, and TTL or size eviction dropped entries only from memory, so evicted rows loaded again on the next start. Warm start now restores each entry's `created_at` (UTC) as its insert time, applies TTL and `max_size` before the first lookup, and drops rows with no readable `created_at`. TTL expiry in `get()` / `get_opaque()` and every eviction in `_evict_if_needed()` delete the matching SQLite row, for semantic and opaque v2 keys alike. Key normalization, tier matching and the enhanced recall request key are unchanged. No schema change: the existing `created_at` column carries the insert time.
 
 ## [4.0.0] - 2026-10-26
 
