@@ -30,22 +30,20 @@ configuration rewrite, installation, automatic provider switch, or fallback is
 performed. Existing configuration is left alone. The repair does not change
 supported-desktop entry paths or their missing-dependency diagnostics.
 
-## Release and acceptance gates — not satisfied by source merge
+## Release and acceptance gates
 
-This source change is **not a package release**. Published `mnemosyne-hermes`
-`0.7.6` does not contain these guards. The current catalog bounds remain
-`mnemosyne-hermes>=0.7.6,<0.8` and `mnemosyne-memory[embeddings]>=4.0.0b6`;
-the Core ONNX Runtime ceiling remains unchanged.
+The guards first shipped in published `mnemosyne-hermes` `0.7.7`; `0.7.6` and
+earlier do not contain them. The catalog bounds are
+`mnemosyne-hermes>=0.7.7,<0.8` and `mnemosyne-memory[embeddings]>=4.0.0`; the
+Core ONNX Runtime ceiling is unchanged.
 
-Before shipping the complete standalone/catalog guarantee:
-
-1. The maintainer must release the guard-bearing standalone package and verify
-   the published wheel contains the package, CLI, installer and bootstrap guards.
-2. The eventual catalog must require that **actually published** guard-bearing
-   version. Do not guess a future release number, lower either existing floor,
-   or describe the current `>=0.7.6` floor as delivering standalone guards.
-3. Maintainers must review current-floor packaging/resolver results and perform
-   the required native acceptance. Resolver success is not runtime acceptance.
+1. Done: `0.7.7` is published, and its PyPI wheel carries the package, CLI,
+   installer and bootstrap guards. Installed from PyPI with `sys.platform` set to
+   `android` or `emscripten`, importing the package raises the unsupported-platform
+   error, and the `mnemosyne-hermes` console bootstrap prints it and returns 1.
+2. Done: the catalog requires that published guard-bearing version.
+3. Open: native acceptance on a real Android or Emscripten host. Resolver
+   success and the Python-boundary checks above are not runtime acceptance.
 
 The catalog's local guards protect its own source paths independently of the
 installed dependency version. They do not retrofit old standalone distributions,
