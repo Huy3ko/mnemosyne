@@ -80,6 +80,10 @@ def test_embedding_extras_bound_onnxruntime_below_1_29():
             declared = optional_dependencies[extra]
             for requirement in ONNXRUNTIME_REQUIREMENTS:
                 assert declared.count(requirement) == 1, (extra, requirement, declared)
+            # Nothing else either: a third declaration marked for an unsampled platform
+            # would otherwise slip past the per-string count above.
+            declared_onnxruntime = {r for r in declared if r.startswith("onnxruntime")}
+            assert declared_onnxruntime == set(ONNXRUNTIME_REQUIREMENTS), (extra, declared)
 
         extras_with_requirement = {
             extra
