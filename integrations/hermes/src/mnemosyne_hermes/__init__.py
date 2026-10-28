@@ -2621,6 +2621,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         # Apply provider-specific config from kwargs (Hermes-passed) or config.yaml fallback
         self._apply_provider_config(kwargs)
 
+        # Release a former primary lease before the skip context registers its
+        # backend. Releasing the final lease afterwards would clear that backend.
+        if self._agent_context in self._skip_contexts:
+            self._release_host_llm_backend_ownership()
+
         # Register the Hermes auxiliary LLM backend BEFORE the skip-context
         # early return. The backend is process-global and needed by
         # mnemosyne_sleep / extract_facts regardless of whether this session
@@ -2665,9 +2670,6 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             # skip-context check of its own). Preserving legacy behavior
             # for the plugin in skip contexts is the smaller blast radius
             # vs. silently dropping memory injection for those sessions.
-            # Skip contexts never own the backend. A primary -> skip re-init
-            # therefore drops any lease this instance previously held.
-            self._release_host_llm_backend_ownership()
             self._deactivate_in_module()
             return
 

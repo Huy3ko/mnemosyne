@@ -8,7 +8,7 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 ## [Unreleased]
 
 ### Fixed
-- **The repo-path Hermes provider (`hermes_memory_provider`) no longer clears the shared host LLM backend while another primary provider remains active (#1119).** It now carries the same ownership lease as `mnemosyne_hermes` (#551): only a successfully initialized primary provider owns a lease, the final owner clears the backend, and lease transitions are serialized with the register/unregister calls.
+- **The repo-path Hermes provider (`hermes_memory_provider`) no longer clears the shared host LLM backend while another primary provider remains active (#1119).** It now carries the same ownership lease as `mnemosyne_hermes` (#551): only a successfully initialized primary provider owns a lease, the final owner clears the backend, and lease transitions are serialized with the register/unregister calls. Both provider paths also retain the backend for memory operations when the sole primary provider is reinitialized into a cron or subagent context, without retaining a primary ownership lease.
 
 ### Standalone Hermes 0.7.7
 - Adds explicit, consent-based legacy PM adoption preserving exact package versions and chosen extras (#1217); this is partial work for #1169, which remains open pending release acceptance.

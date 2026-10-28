@@ -216,6 +216,28 @@ def test_primary_to_skip_reinitialization_drops_lease(tmp_path, provider_class):
         set_host_llm_backend(None)
 
 
+def test_sole_primary_to_skip_keeps_backend_without_primary_lease(tmp_path, provider_class):
+    """A skip re-init keeps its backend just like a fresh skip initialization."""
+    provider = provider_class()
+    module = sys.modules[provider_class.__module__]
+    try:
+        provider.initialize("primary", hermes_home=str(tmp_path / "hermes"), agent_context="primary")
+        assert provider._beam is not None
+        assert get_host_llm_backend() is not None
+
+        provider.initialize("cron", hermes_home=str(tmp_path / "hermes"), agent_context="cron")
+        assert provider._beam is None
+        assert provider._owns_host_llm_backend is False
+        assert module._host_llm_owner_count == 0
+        assert get_host_llm_backend() is not None
+
+        provider.shutdown()
+        assert get_host_llm_backend() is not None
+    finally:
+        provider.shutdown()
+        set_host_llm_backend(None)
+
+
 def test_concurrent_peer_shutdowns_clear_once_after_final_owner(tmp_path, provider_class):
     providers = [provider_class() for _ in range(4)]
     module = sys.modules[provider_class.__module__]
