@@ -139,6 +139,7 @@ def test_polyphonic_recall_embeds_query_with_query_prefix(embeddings_mod, monkey
     monkeypatch.setenv("MNEMOSYNE_POLYPHONIC_RECALL", "1")
     for voice in ("TEMPORAL", "GRAPH", "FACT"):
         monkeypatch.setenv(f"MNEMOSYNE_VOICE_{voice}", "0")
+    monkeypatch.delenv("MNEMOSYNE_VOICE_VECTOR", raising=False)
     beam = BeamMemory(session_id="prefix-session", db_path=tmp_path / "memory.db")
     target = beam.remember(TARGET, source="user", dedupe=False)
     beam.remember(DISTRACTOR, source="user", dedupe=False)
