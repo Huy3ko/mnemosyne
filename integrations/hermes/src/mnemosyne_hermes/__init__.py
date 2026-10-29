@@ -2846,7 +2846,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             query = _sanitize_prefetch_query(query)
             if not query.strip():
                 return ""
-            with self._beam_session_scope(session_id) as beam:
+            with self._beam_session_scope_raw(session_id) as beam:
                 if beam is None:
                     return ""
                 recall_kwargs: Dict[str, Any] = dict(
@@ -3083,7 +3083,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         return previous_session_id, provider_session_id
 
     @contextmanager
-    def _beam_session_scope(self, session_id: str):
+    def _beam_session_scope_raw(self, session_id: str):
         """Scope one Beam operation without replacing durable switch state."""
         requested_session_id = str(session_id or "").strip()
         with self._ensure_beam_access_lock():
@@ -3117,6 +3117,77 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     else:
                         del beam.channel_id
 
+
+    # --- Vela-Bank-Routing (Port aus dem 0.7.3-Fork, 29.10.2026) ----------
+    # Eine Vela, getrennte Erinnerungsbanken je Gespraechspartner. Die Zuordnung
+    # kommt aus der Chat-Identitaet des Turns, nie aus dem Inhalt. Fail-closed:
+    # unbekannte Identitaet -> quarantine, interner Kontext -> _default.
+    def _route_session_key(self, requested_session_id: str) -> str:
+        def _normalise(candidate: str) -> str:
+            if candidate.startswith("hermes_agent:"):
+                return "agent:" + candidate[len("hermes_agent:"):]
+            return candidate
+        explicit = _normalise(str(getattr(self, "_gateway_session_key", "") or "").strip())
+        requested = _normalise(str(requested_session_id or "").strip())
+        for candidate in (explicit, requested):
+            if candidate.startswith("agent:"):
+                return candidate
+        return explicit or requested
+
+    def _beam_for_bank(self, bank: str, reason: str = ""):
+        """Beam + Mnemosyne-Instanz einer Bank (gecacht)."""
+        from . import bank_router
+        cache = getattr(self, "_bank_cache", None)
+        if cache is None:
+            cache = {}
+            self._bank_cache = cache
+        if bank in cache:
+            return cache[bank]
+        from mnemosyne.core.memory import Mnemosyne
+        db_path = bank_router.bank_db_path(bank, getattr(self, "_hermes_home", None))
+        mem = Mnemosyne(
+            session_id=getattr(self, "_session_id", "default"),
+            db_path=str(db_path),
+            bank=bank,
+            channel_id=getattr(getattr(self, "_beam", None), "channel_id", "") or "",
+        )
+        entry = (mem.beam, mem)
+        cache[bank] = entry
+        try:
+            self._audit_event("bank_bound", bank=bank, reason=reason, db_path=str(db_path))
+        except Exception:
+            pass
+        logger.info("Mnemosyne bank bound: bank=%s reason=%s db=%s", bank, reason, db_path)
+        return entry
+
+    def _current_bank(self) -> str:
+        return str(getattr(self, "_active_bank", "") or "")
+
+    @contextmanager
+    def _beam_session_scope(self, session_id: str):
+        """Bank des Turns binden, dann den Upstream-Scope ausfuehren."""
+        from . import bank_router
+        key = self._route_session_key(session_id)
+        bank, reason = bank_router.resolve_bank(key, getattr(self, "_hermes_home", None))
+        previous_bank = getattr(self, "_active_bank", None)
+        previous_beam = getattr(self, "_beam", None)
+        self._active_bank = bank
+        if bank == previous_bank and previous_beam is not None:
+            with self._beam_session_scope_raw(session_id) as scoped:
+                yield scoped
+            return
+        try:
+            beam, _mem = self._beam_for_bank(bank, reason)
+        except Exception:
+            self._active_bank = previous_bank
+            raise
+        self._beam = beam
+        try:
+            with self._beam_session_scope_raw(session_id) as scoped:
+                yield scoped
+        finally:
+            self._beam = previous_beam
+            self._active_bank = previous_bank
     def _sync_turn_diagnostics(self) -> Dict[str, Any]:
         """Return a PII-safe snapshot of sync_turn telemetry."""
         self._ensure_sync_turn_telemetry()
@@ -3431,7 +3502,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     # Tools use the durable session selected by on_session_switch().
                     # Hold the same session lock for the complete dispatch so a write,
                     # recall, or sleep cannot be re-attributed mid-operation.
-                    with self._beam_session_scope("") as beam:
+                    with self._beam_session_scope_raw("") as beam:
                         if beam is None:
                             # C27: structured response carries the actual failure reason
                             # instead of a generic "not initialized" string. Status field
