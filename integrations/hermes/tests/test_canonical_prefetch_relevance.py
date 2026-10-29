@@ -145,6 +145,35 @@ def test_rare_content_evidence_outweighs_common_overlap(store):
     assert names(store, query)[0] == "z_vault"
 
 
+def test_two_rare_terms_outrank_three_common_terms(store):
+    seed(store, [(f"a_deploy_{i}", "deployment pipeline worker") for i in range(4)])
+    seed(store, [("z_vault", "Vaultwarden Passwort sichern")])
+    query = "deployment pipeline worker Vaultwarden Passwort"
+    rows = _canonical_prefetch_rows(store, "default", query, limit=5)
+    by_name = {row["canonical_name"]: row for row in rows}
+    # The rare pair covers more weighted query evidence, despite matching
+    # fewer terms. A count bonus must not reverse that order before limit=3.
+    assert by_name["z_vault"]["keyword_score"] > by_name["a_deploy_0"]["keyword_score"]
+    assert names(store, query)[0] == "z_vault"
+
+
+def test_rendered_context_retains_two_rare_terms_among_three_term_matches(tmp_path):
+    provider = MnemosyneMemoryProvider()
+    provider.initialize("issue-1263-count-bonus", hermes_home=str(tmp_path), agent_identity="default", profile_isolation=False)
+    try:
+        assert provider._beam is not None
+        canonical = CanonicalStore(db_path=provider._beam.db_path, conn=provider._beam.conn)
+        provider._beam.canonical = canonical
+        seed(canonical, [(f"a_deploy_{i}", "deployment pipeline worker") for i in range(4)])
+        seed(canonical, [("z_vault", "Vaultwarden Passwort sichern")])
+
+        block = provider.prefetch("deployment pipeline worker Vaultwarden Passwort")
+
+        assert "Vaultwarden Passwort" in block
+    finally:
+        provider.shutdown()
+
+
 def test_generic_overlap_does_not_boost_a_canonical_score(store):
     seed(store, [
         ("a_padded", "muss neue Vaultwarden Passwort sichern"),

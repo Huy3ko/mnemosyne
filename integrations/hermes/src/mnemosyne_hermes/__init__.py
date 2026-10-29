@@ -962,7 +962,7 @@ def _canonical_prefetch_rows(store: Any, owner_id: str, query: str, *, limit: in
         elif len(distinctive_overlap) < minimum_overlap:
             continue
         evidence_coverage = math.fsum(query_weights[token] for token in distinctive_overlap) / query_weight
-        score = min(1.0, 0.72 + evidence_coverage * 0.24 + min(len(distinctive_overlap), 3) * 0.03)
+        score = min(1.0, 0.72 + evidence_coverage * 0.24)
         candidates.append({
             "content": body,
             "source": f"canonical:{row.get('category') or 'fact'}",
