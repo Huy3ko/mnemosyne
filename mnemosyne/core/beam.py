@@ -11645,9 +11645,7 @@ class BeamMemory:
         query_embedding = None
         if _embeddings.available():
             try:
-                vecs = _embeddings.embed([query])
-                if vecs is not None and len(vecs) > 0:
-                    query_embedding = vecs[0]
+                query_embedding = _embeddings.embed_query(query)
             except Exception:
                 query_embedding = None
 
