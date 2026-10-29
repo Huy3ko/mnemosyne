@@ -470,7 +470,19 @@ _PREFETCH_LEXICAL_GENERIC_TOKENS = {
 # deployments can replace this list with
 # MNEMOSYNE_PREFETCH_CANONICAL_GENERIC_TOKENS or extend the effective list with
 # MNEMOSYNE_PREFETCH_CANONICAL_EXTRA_GENERIC_TOKENS.
-_PREFETCH_CANONICAL_GENERIC_TOKEN_DEFAULTS = set(_PREFETCH_LEXICAL_GENERIC_TOKENS)
+# German function words are not topical evidence for automatic canonical
+# injection (#1263). Keep this bounded vocabulary separate from tokenization
+# and explicit recall. Frequency alone cannot identify function words: common
+# domain terms such as "Vaultwarden Passwort" must remain useful in small banks.
+_PREFETCH_CANONICAL_GENERIC_TOKEN_DEFAULTS = _PREFETCH_LEXICAL_GENERIC_TOKENS | {
+    "aber", "alle", "als", "auch", "auf", "aus", "bei", "dass", "das",
+    "dem", "den", "der", "des", "die", "dies", "diese", "diesem", "diesen",
+    "dieser", "dieses", "doch", "ein", "eine", "einem", "einen", "einer",
+    "eines", "für", "fuer", "ich", "ist", "kein", "keine", "kann", "mit",
+    "mich", "muss", "müssen", "nach", "neue", "neuem", "neuen", "neuer",
+    "neues", "nicht", "noch", "nur", "oder", "sich", "sind", "soll", "und",
+    "vom", "von", "vor", "was", "wenn", "werden", "wie", "wird", "zum", "zur",
+}
 
 # Explicit recall keeps the pre-hardening default generic-token contract while
 # continuing to honor the established canonical replacement variable. The new
@@ -883,6 +895,9 @@ def _canonical_prefetch_rows(store: Any, owner_id: str, query: str, *, limit: in
     except Exception:
         return []
     generic_tokens = _prefetch_canonical_generic_tokens()
+    query_distinctive = query_tokens - generic_tokens
+    if not query_distinctive:
+        return []
     tokenized_rows: List[tuple[Dict[str, Any], str, Set[str]]] = []
     token_document_frequency: Dict[str, int] = {}
     for row in rows:
@@ -897,6 +912,15 @@ def _canonical_prefetch_rows(store: Any, owner_id: str, query: str, *, limit: in
         tokenized_rows.append((row, body, row_tokens))
         for token in row_tokens - generic_tokens:
             token_document_frequency[token] = token_document_frequency.get(token, 0) + 1
+
+    # Rank by distinctive evidence, not a count of shared function words.
+    # IDF downweights repeated domain vocabulary without making it ineligible;
+    # a frequency blacklist would erase useful terms in focused small banks.
+    query_weights = {
+        token: math.log((len(tokenized_rows) + 1) / (token_document_frequency.get(token, 0) + 1)) + 1.0
+        for token in query_distinctive
+    }
+    query_weight = math.fsum(query_weights.values())
 
     # A single lexical overlap is useful only when the token is genuinely rare
     # across the owner's canonical surface. Otherwise broad words such as
@@ -937,14 +961,15 @@ def _canonical_prefetch_rows(store: Any, owner_id: str, query: str, *, limit: in
                 continue
         elif len(distinctive_overlap) < minimum_overlap:
             continue
-        score = min(1.0, 0.72 + coverage * 0.24 + min(len(overlap), 3) * 0.03)
+        evidence_coverage = math.fsum(query_weights[token] for token in distinctive_overlap) / query_weight
+        score = min(1.0, 0.72 + evidence_coverage * 0.24 + min(len(distinctive_overlap), 3) * 0.03)
         candidates.append({
             "content": body,
             "source": f"canonical:{row.get('category') or 'fact'}",
             "timestamp": row.get("valid_from") or row.get("created_at") or "",
             "importance": 0.95,
             "score": score,
-            "keyword_score": max(0.35, coverage),
+            "keyword_score": max(0.35, evidence_coverage),
             "fact_match": True,
             "trust_tier": "CANONICAL",
             "tier": "canonical",
