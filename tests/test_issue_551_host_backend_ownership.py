@@ -134,6 +134,37 @@ def test_first_primary_init_failure_clears_unowned_backend(tmp_path, provider_cl
         set_host_llm_backend(None)
 
 
+@pytest.mark.parametrize("skip_context", ("cron", "subagent"))
+def test_failed_primary_initialization_preserves_skip_backend(
+    tmp_path, provider_class, monkeypatch, skip_context
+):
+    """A failed new primary must leave an existing skip registration intact."""
+    skipped = provider_class()
+    failed = provider_class()
+    module = sys.modules[provider_class.__module__]
+    try:
+        skipped.initialize(
+            "skip", hermes_home=str(tmp_path / "skip"), agent_context=skip_context
+        )
+        backend = get_host_llm_backend()
+        assert backend is not None
+        assert module._host_llm_owner_count == 0
+        monkeypatch.setattr(module, "_get_beam_class", lambda: _raise_init_failure)
+
+        failed.initialize("failed", hermes_home=str(tmp_path / "failed"), agent_context="primary")
+
+        assert failed._beam is None
+        assert failed._init_error is not None
+        assert failed._owns_host_llm_backend is False
+        assert get_host_llm_backend() is backend
+        failed.shutdown()
+        assert get_host_llm_backend() is backend
+    finally:
+        failed.shutdown()
+        skipped.shutdown()
+        set_host_llm_backend(None)
+
+
 def test_failed_reinitialization_releases_prior_owner(tmp_path, provider_class, monkeypatch):
     provider = provider_class()
     module = sys.modules[provider_class.__module__]

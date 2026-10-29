@@ -74,8 +74,7 @@ def test_initialize_registers_host_llm_when_register_returns_true(monkeypatch):
     monkeypatch.setattr("hermes_memory_provider._get_beam_class", lambda: lambda **kwargs: MagicMock())
     # Stub the registration call so the test does not depend on the real
     # adapter behavior — we only verify the hook is invoked and survives.
-    # A primary init registers before the skip-context check and again when
-    # it takes the ownership lease (#1119), so expect at least one call.
+    # A successful primary init registers when it takes its ownership lease.
     with patch("hermes_memory_provider.hermes_llm_adapter.register_hermes_host_llm", return_value=True) as mock_reg:
         provider.initialize(session_id="test-session")
     mock_reg.assert_called()

@@ -2314,19 +2314,17 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         if self._agent_context in self._skip_contexts:
             self._release_host_llm_backend_ownership()
 
-        # C25: Register the Hermes auxiliary LLM backend BEFORE the skip-context
-        # early return. The backend is process-global and needed by sleep even in
-        # skip-context sessions (subagent/cron/flush can still run memory tools).
-        host_llm_registered = False
-        try:
-            from hermes_memory_provider.hermes_llm_adapter import register_hermes_host_llm
-            host_llm_registered = register_hermes_host_llm()
-            if host_llm_registered:
-                logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
-        except Exception as exc:
-            logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
-
         if self._agent_context in self._skip_contexts:
+            # Skip contexts retain their existing process-global registration.
+            # A primary registers only when its successful init acquires a lease,
+            # so a failed new primary cannot replace or clear this backend.
+            with _host_llm_lock:
+                try:
+                    from hermes_memory_provider.hermes_llm_adapter import register_hermes_host_llm
+                    if register_hermes_host_llm():
+                        logger.info("Mnemosyne registered Hermes auxiliary LLM backend for memory operations")
+                except Exception as exc:
+                    logger.debug("Mnemosyne could not register Hermes auxiliary LLM backend: %s", exc)
             logger.debug("Mnemosyne skipped: non-primary context=%s", self._agent_context)
             # C13: a skip-context re-init must DEACTIVATE the instance if
             # it was previously active in this process. Without this, a
@@ -2380,20 +2378,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             logger.warning("Mnemosyne init failed: %s", e)
             self._beam = None
             self._init_error = e
-            # A failed re-initialization no longer supplies a live primary
-            # backend owner, even though _provider_active retains its existing
-            # fallback semantics. A first failed primary init registered the
-            # process-global backend above but never acquired a lease, so clear
-            # that unowned registration when no peer owns it.
+            # A failed re-init releases only its own former primary lease.
+            # New failed primaries never registered a backend, so they must not
+            # clear an existing skip-context or peer registration.
             self._release_host_llm_backend_ownership()
-            if host_llm_registered:
-                with _host_llm_lock:
-                    if _host_llm_owner_count == 0:
-                        try:
-                            from hermes_memory_provider.hermes_llm_adapter import unregister_hermes_host_llm
-                            unregister_hermes_host_llm()
-                        except Exception as exc:
-                            logger.debug("Mnemosyne could not unregister Hermes auxiliary LLM backend: %s", exc)
 
         # C13: activate AFTER the BeamMemory init result is known. If
         # init succeeded (_beam is set) the provider is the live memory
