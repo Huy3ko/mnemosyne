@@ -77,7 +77,6 @@ def test_graph_voice_order_does_not_depend_on_hash_seed(graph_db):
         assert run == runs[0], f"PYTHONHASHSEED={seed} differs from 0"
 
 
-
 def test_gist_participants_do_not_depend_on_hash_seed():
     """The participant list is capped at 5, so with more candidates the dedupe order
     decides which names are stored on the gist, and so which gists the graph voice finds."""
@@ -87,3 +86,15 @@ def test_gist_participants_do_not_depend_on_hash_seed():
     assert runs[0] == ["Alice", "Bob", "Carol", "Dave", "Erin"]
     for seed, run in runs.items():
         assert run == runs[0], f"PYTHONHASHSEED={seed} differs from 0"
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("she met Alice, Bob, Carol, Dave and Erin", ["she", "Alice", "Bob", "Carol", "Dave"]),
+        ("Alice, Bob, Carol, Dave and Erin met her", ["Alice", "Bob", "Carol", "Dave", "Erin"]),
+        ("Alice told me that Bob and I saw Carol", ["Alice", "me", "Bob", "I", "Carol"]),
+    ],
+)
+def test_gist_participants_keep_text_order_across_names_and_pronouns(text, expected):
+    assert EpisodicGraph._extract_participants(None, text) == expected

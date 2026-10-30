@@ -325,15 +325,18 @@ class EpisodicGraph:
         """Extract participant names and pronouns."""
         # Common name patterns
         name_pattern = r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b"
-        names = re.findall(name_pattern, content)
+        names = [(m.start(), m.group(1)) for m in re.finditer(name_pattern, content)]
         
         # Pronouns
         pronoun_pattern = r"\b(I|you|we|they|he|she|it|me|us|them|him|her)\b"
-        pronouns = re.findall(pronoun_pattern, content, re.IGNORECASE)
+        pronouns = [
+            (m.start(), m.group(1))
+            for m in re.finditer(pronoun_pattern, content, re.IGNORECASE)
+        ]
         
-        # Combine and deduplicate in text order: a set would let the string hash seed
-        # pick which names survive the cap.
-        participants = list(dict.fromkeys(names + pronouns))
+        # Combine and deduplicate in text order, so the cap keeps the first five
+        # mentions; a set would let the string hash seed pick the survivors.
+        participants = list(dict.fromkeys(p for _, p in sorted(names + pronouns)))
         return participants[:5]  # Cap at 5
     
     def _extract_temporal_scope(self, content: str) -> Optional[str]:
