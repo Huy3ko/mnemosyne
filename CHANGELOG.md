@@ -7,6 +7,9 @@ and this project adheres to [SemVer](https://semver.org/) starting from v3.1.2.
 
 ## [Unreleased]
 
+### Added
+- **Advisory offline linear BEAM throughput benchmark (#901).** A fixed synthetic workload on a temporary database reports warm per-call latency, sequential throughput, raw samples and environment/revision metadata as JSON, with compatible same-machine baseline comparisons and a documented retention/interpretation policy. No runtime recall changes or CI timing threshold.
+
 ### Fixed
 - **The repo-path Hermes provider (`hermes_memory_provider`) no longer clears the shared host LLM backend while another primary instance of the same provider path remains active (#1119).** It now carries the same ownership lease as `mnemosyne_hermes` (#551): only a successfully initialized primary provider owns a lease, the final owner clears the backend, and lease transitions are serialized with the register/unregister calls. Both provider paths also retain the backend for memory operations when the sole primary provider is reinitialized into a cron or subagent context, without retaining a primary ownership lease. A failed new primary initialization leaves an existing skip-context backend intact.
 - **Prefetch ignores unambiguous Hermes channel backfill.** Both Hermes providers remove a leading `[Recent channel messages]` envelope with exactly one `\n\n[New message]\n` separator before stripping speaker stamps from the current body. Multiple separators, including nested envelopes and literal separators in the current body, preserve the entire query to avoid truncation; history may still enter recall in these ambiguous cases. Reliable separation requires an upstream format or separate current-body signal. Literal markers in ordinary queries and other channel-context formats are retained, including in explicit recall. This changes queries only, not stored memories.
