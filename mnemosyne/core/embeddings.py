@@ -974,10 +974,12 @@ def embed_query(text: str) -> Optional[np.ndarray]:
     api_url = _effective_base_url() if _is_api_model(_DEFAULT_MODEL) else None
     if api_url is None:
         # Direct callers never touch available(), so retry the dense-stack
-        # import here: otherwise a warm cached None from the outage keeps being
-        # served after the stack recovers. A successful bind also drops those
-        # stale entries (see _ensure_fastembed).
-        _is_fastembed_available()
+        # import here. If it still cannot be imported, return WITHOUT consulting
+        # (or populating) the cache: memoising a failure is what let a stale
+        # None outlive recovery. A successful bind also drops any entry cached
+        # by an older revision (see _ensure_fastembed).
+        if not _is_fastembed_available():
+            return None
     return _embed_query_cached(_get_prefix("query") + text, _embedding_caps(), api_url)
 
 

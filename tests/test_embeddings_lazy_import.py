@@ -7,13 +7,14 @@ is unreachable (the Hermes plugin-loader import window, or a venv without the
 embeddings extra), both globals bind to None and ``available()`` returns False
 for the whole process lifetime, even after the stack becomes importable.
 
-These tests pin three behaviours:
+These tests pin four behaviours:
 1. ``available()`` re-attempts the import when the globals are empty, so dense
    retrieval self-heals without a reload;
 2. a failing import logs exactly one warning naming the failing module rather
    than degrading silently;
-3. a query memoised as ``None`` during the outage is dropped on recovery, so it
-   is recomputed instead of returning the stale failure forever.
+3. ``embed_query()`` never memoises a failure — during an outage it returns
+   ``None`` without touching the cache, so no stale entry can outlive recovery;
+4. if an entry did get cached by an older revision, recovery drops it.
 
 The tests install stub ``numpy``/``fastembed`` modules, so they do NOT require
 the optional ``embeddings`` extra to run — the retry and cache behaviour is what
@@ -28,10 +29,34 @@ import logging
 import os
 import sys
 import types
+from functools import lru_cache
 
 from mnemosyne.core import embeddings
 
 _DENSE_MODULES = ("numpy", "fastembed")
+
+# Ambient settings that would change which branch of embed_query() runs.
+_ISOLATED_ENV = (
+    "MNEMOSYNE_NO_EMBEDDINGS",
+    "MNEMOSYNE_SKIP_EMBEDDINGS",
+    "MNEMOSYNE_EMBEDDINGS_OFF",
+    "MNEMOSYNE_EMBEDDING_API_URL",
+    "MNEMOSYNE_EMBEDDING_API_KEY",
+    "MNEMOSYNE_EMBEDDINGS_VIA_API",
+)
+
+
+def _isolate_config(monkeypatch, tmp_path):
+    """Neutralise ambient embedding config and point the cache at tmp_path.
+
+    Call this BEFORE a reload and again AFTER it: ``importlib.reload`` re-runs
+    the module body, which re-computes ``_FASTEMBED_CACHE_DIR`` from the
+    environment and would otherwise undo the patch (and let a stub model write
+    into the real home directory).
+    """
+    for key in _ISOLATED_ENV:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(embeddings, "_FASTEMBED_CACHE_DIR", str(tmp_path / "cache"))
 
 
 def _site_package_entries():
@@ -97,14 +122,7 @@ def _restore_stub_dense_stack(previous):
 
 
 def test_available_self_heals_after_dense_stack_returns(monkeypatch, tmp_path):
-    for key in (
-        "MNEMOSYNE_NO_EMBEDDINGS",
-        "MNEMOSYNE_SKIP_EMBEDDINGS",
-        "MNEMOSYNE_EMBEDDINGS_OFF",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    # Keep the stub model's cache dir out of the real home directory.
-    monkeypatch.setattr(embeddings, "_FASTEMBED_CACHE_DIR", str(tmp_path / "cache"))
+    _isolate_config(monkeypatch, tmp_path)
 
     query = "mnemosyne lazy import cache probe"
     original_path = list(sys.path)
@@ -117,20 +135,22 @@ def test_available_self_heals_after_dense_stack_returns(monkeypatch, tmp_path):
         # import fail with "cannot load module more than once per process".
         builtins.__import__ = _make_blocked_import(original_import)
         importlib.reload(embeddings)
+        _isolate_config(monkeypatch, tmp_path)  # reload re-computed the defaults
 
         assert embeddings.available() is False
         assert embeddings.np is None
         assert embeddings.TextEmbedding is None
         assert embeddings._FASTEMBED_AVAILABLE is False
 
-        # A query taken during the outage is memoised as None ...
+        # A query taken during the outage returns None and caches NOTHING:
+        # memoising the failure is what let a stale None outlive recovery.
         assert embeddings.embed_query(query) is None
         cached_before = embeddings._embed_query_cached.cache_info()
-        assert cached_before.currsize == 1, cached_before
+        assert cached_before.currsize == 0, cached_before
 
-        # ... and the stack becomes importable again. With the real extra
-        # installed the bindings come from it; without it (CI, minimal install)
-        # the stubs stand in. Either way the retry happens without a reload.
+        # The stack becomes importable again. With the real extra installed the
+        # bindings come from it; without it (CI, minimal install) the stubs
+        # stand in. Either way the retry happens without a reload.
         previous_modules, (stub_np, stub_text_embedding) = _install_stub_dense_stack()
         builtins.__import__ = original_import
 
@@ -139,16 +159,7 @@ def test_available_self_heals_after_dense_stack_returns(monkeypatch, tmp_path):
         assert embeddings.TextEmbedding is stub_text_embedding
         assert embeddings._FASTEMBED_AVAILABLE is False  # frozen alias, unused
 
-        # The stale None must be gone: without cache_clear() on recovery this
-        # entry survives (currsize 1) and the query keeps returning the cached
-        # failure forever.
-        cached_after = embeddings._embed_query_cached.cache_info()
-        assert cached_after.currsize == 0, cached_after
-
-        # And the same query now recomputes instead of serving the stale miss.
-        # cache_clear() also resets the statistics, so the fresh cache holds
-        # exactly one entry, one miss and no hits; without cache_clear() the
-        # second call would be a HIT returning the stale None.
+        # The same query now produces a vector, and only that success is cached.
         assert embeddings.embed_query(query) is not None
         recomputed = embeddings._embed_query_cached.cache_info()
         assert recomputed.misses == 1, recomputed
@@ -162,13 +173,45 @@ def test_available_self_heals_after_dense_stack_returns(monkeypatch, tmp_path):
         importlib.reload(embeddings)
 
 
-def test_import_failure_warns_exactly_once(monkeypatch, caplog):
-    for key in (
-        "MNEMOSYNE_NO_EMBEDDINGS",
-        "MNEMOSYNE_SKIP_EMBEDDINGS",
-        "MNEMOSYNE_EMBEDDINGS_OFF",
-    ):
-        monkeypatch.delenv(key, raising=False)
+def test_recovery_clears_a_preexisting_cached_failure(monkeypatch, tmp_path):
+    """Defence in depth: an entry cached by an older revision is dropped.
+
+    embed_query() no longer caches failures, but a process upgraded in place can
+    already hold one. ``_ensure_fastembed()`` must clear the cache when the stack
+    first binds.
+    """
+    _isolate_config(monkeypatch, tmp_path)
+
+    calls = {"n": 0}
+
+    @lru_cache(maxsize=8)
+    def _fake_cached(prefixed, _caps=(0, 0), api_url=None):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(embeddings, "_embed_query_cached", _fake_cached)
+    _fake_cached("warm", (0, 0), None)
+    assert _fake_cached.cache_info().currsize == 1
+
+    # Force the "stack is unbound, then becomes importable" transition.
+    monkeypatch.setattr(embeddings, "np", None)
+    monkeypatch.setattr(embeddings, "TextEmbedding", None)
+    monkeypatch.setattr(embeddings, "_DENSE_STACK_IMPORTED", False)
+
+    previous_modules = None
+    try:
+        previous_modules, _ = _install_stub_dense_stack()
+        importlib.invalidate_caches()
+        assert embeddings._is_fastembed_available() is True
+        assert _fake_cached.cache_info().currsize == 0
+    finally:
+        if previous_modules is not None:
+            _restore_stub_dense_stack(previous_modules)
+        importlib.reload(embeddings)
+
+
+def test_import_failure_warns_exactly_once(monkeypatch, caplog, tmp_path):
+    _isolate_config(monkeypatch, tmp_path)
 
     original_path = list(sys.path)
     original_import = builtins.__import__
@@ -196,19 +239,8 @@ def test_import_failure_warns_exactly_once(monkeypatch, caplog):
 
 
 def test_embed_query_recovers_without_calling_available(monkeypatch, tmp_path):
-    """A direct caller never touches available(); embed_query() must retry anyway.
-
-    Regression for the follow-up review: embed_query() served a cached None from
-    the outage even after the dense stack was importable again, because only
-    available()/_get_model() re-attempt the import.
-    """
-    for key in (
-        "MNEMOSYNE_NO_EMBEDDINGS",
-        "MNEMOSYNE_SKIP_EMBEDDINGS",
-        "MNEMOSYNE_EMBEDDINGS_OFF",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(embeddings, "_FASTEMBED_CACHE_DIR", str(tmp_path / "cache"))
+    """A direct caller never touches available(); embed_query() must retry anyway."""
+    _isolate_config(monkeypatch, tmp_path)
 
     query = "mnemosyne direct embed_query recovery probe"
     original_path = list(sys.path)
@@ -217,9 +249,12 @@ def test_embed_query_recovers_without_calling_available(monkeypatch, tmp_path):
     try:
         builtins.__import__ = _make_blocked_import(original_import)
         importlib.reload(embeddings)
+        _isolate_config(monkeypatch, tmp_path)
 
         assert embeddings.embed_query(query) is None
-        assert embeddings.embed_query(query) is None  # served from the cache
+        assert embeddings.embed_query(query) is None
+        # Neither call memoised a failure.
+        assert embeddings._embed_query_cached.cache_info().currsize == 0
 
         previous_modules, _ = _install_stub_dense_stack()
         builtins.__import__ = original_import
