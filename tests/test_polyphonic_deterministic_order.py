@@ -94,7 +94,21 @@ def test_gist_participants_do_not_depend_on_hash_seed():
         ("she met Alice, Bob, Carol, Dave and Erin", ["she", "Alice", "Bob", "Carol", "Dave"]),
         ("Alice, Bob, Carol, Dave and Erin met her", ["Alice", "Bob", "Carol", "Dave", "Erin"]),
         ("Alice told me that Bob and I saw Carol", ["Alice", "me", "Bob", "I", "Carol"]),
+        ("Alice met Bob, Alice, Carol, Dave, Erin and Frank", ["Alice", "Bob", "Carol", "Dave", "Erin"]),
     ],
 )
 def test_gist_participants_keep_text_order_across_names_and_pronouns(text, expected):
     assert EpisodicGraph._extract_participants(None, text) == expected
+
+
+def test_extracted_participants_are_what_the_graph_lookup_finds(tmp_path):
+    """The cap decides which participants are stored, and the graph voice can only find
+    a gist by a stored participant: the first five mentions, not the sixth."""
+    graph = EpisodicGraph(db_path=tmp_path / "graph.db")
+    gist = graph.extract_gist("she met Alice, Bob, Carol, Dave and Frank", "m1")
+    graph.store_gist(gist, "m1")
+
+    assert [g.id for g in graph.find_gists_by_participant("she")] == ["gist_m1"]
+    assert [g.id for g in graph.find_gists_by_participant("Dave")] == ["gist_m1"]
+    assert graph.find_gists_by_participant("Frank") == []
+    graph.conn.close()
