@@ -147,10 +147,14 @@ def report():
 def test_compare_is_advisory_and_allows_revision_time_sample_changes(report):
     slower = copy.deepcopy(report)
     slower["summary"]["median_qps"] /= 2
+    slower["summary"]["latency_ms"]["p50"] *= 1.5
+    slower["summary"]["latency_ms"]["p95"] *= 2
     slower.update(revision={"commit": "candidate", "dirty": True},
                   recorded_at_utc="candidate-time", samples_ns=[[20]])
     assert bench.compare(slower, report)["compatible"] is True
     assert bench.compare(slower, report)["median_qps_change_pct"] == -50
+    assert bench.compare(slower, report)["p50_latency_change_pct"] == 50
+    assert bench.compare(slower, report)["p95_latency_change_pct"] == 100
 
 
 @pytest.mark.parametrize("missing", [False, True])
@@ -205,8 +209,10 @@ def test_baseline_errors_fail_before_worker(tmp_path, monkeypatch, capsys, conte
 
 
 @pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "1"])
-def test_baseline_rejects_invalid_divisors(tmp_path, report, value):
-    report["summary"]["median_qps"] = value
+@pytest.mark.parametrize("metric", ["median_qps", "p50", "p95"])
+def test_baseline_rejects_invalid_divisors(tmp_path, report, value, metric):
+    summary = report["summary"] if metric == "median_qps" else report["summary"]["latency_ms"]
+    summary[metric] = value
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps(report), encoding="utf-8")
     with pytest.raises(ValueError, match="finite positive"):
