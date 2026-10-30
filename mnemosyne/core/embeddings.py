@@ -100,6 +100,16 @@ def _ensure_fastembed() -> bool:
         TextEmbedding = _TE
         _DENSE_STACK_IMPORTED = True
         _DENSE_STACK_WARNED = False
+        # First successful bind: drop any cached failure from embed_query().
+        # _embed_query_cached memoises its result, so a query that ran before
+        # the stack was importable holds a cached None and would keep returning
+        # None even though the model can now load.
+        _cached = globals().get("_embed_query_cached")
+        if _cached is not None:
+            try:
+                _cached.cache_clear()
+            except Exception:  # pragma: no cover - cache_clear is best effort
+                pass
         return True
 
 
