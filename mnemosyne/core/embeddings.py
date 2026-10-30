@@ -43,14 +43,82 @@ try:
 except Exception:
     TextEmbedding = None
 
+# Module-level import guard. While True (during module load) a failed dense-stack
+# import does not emit its one-time warning; the warning is deferred to the
+# first post-import attempt (e.g. available() / _ensure_fastembed()) so
+# import-time alias evaluation does not consume it. Reset to False once alias
+# evaluation completes.
+_IMPORTING = True
+
+# Dense-stack import state. _DENSE_STACK_IMPORTED remembers a successful import
+# so later calls skip re-importing; _DENSE_STACK_WARNED ensures a failing import
+# warns at most once (reset on a later success).
+_DENSE_STACK_IMPORTED = np is not None and TextEmbedding is not None
+_DENSE_STACK_WARNED = False
+# Guards concurrent first-time imports so two threads cannot both attempt the
+# import (and both emit the warning) when the stack is absent.
+_DENSE_STACK_LOCK = threading.Lock()
+
+
+def _ensure_fastembed() -> bool:
+    """Ensure numpy and fastembed.TextEmbedding are importable, binding the
+    module globals on success.
+
+    Returns True on success (and remembers it so later calls skip re-importing)
+    and False on failure. On failure logs exactly one WARNING naming the failing
+    module ('numpy' or 'fastembed') and the reason; repeated failures do not
+    re-warn. A later success resets the warned flag. Thread-safe.
+    """
+    global np, TextEmbedding, _DENSE_STACK_IMPORTED, _DENSE_STACK_WARNED
+    if _DENSE_STACK_IMPORTED and np is not None and TextEmbedding is not None:
+        return True
+    if _DENSE_STACK_IMPORTED and (np is None or TextEmbedding is None):
+        _DENSE_STACK_IMPORTED = False
+
+    with _DENSE_STACK_LOCK:
+        # Re-check under the lock: another thread may have imported meanwhile.
+        if np is not None and TextEmbedding is not None:
+            _DENSE_STACK_IMPORTED = True
+            return True
+
+        try:
+            import numpy as _np
+        except Exception as exc:  # noqa: BLE001
+            if not _DENSE_STACK_WARNED and not _IMPORTING:
+                logger.warning("could not import numpy: %s", exc)
+                _DENSE_STACK_WARNED = True
+            return False
+        try:
+            from fastembed import TextEmbedding as _TE
+        except Exception as exc:  # noqa: BLE001
+            if not _DENSE_STACK_WARNED and not _IMPORTING:
+                logger.warning("could not import fastembed: %s", exc)
+                _DENSE_STACK_WARNED = True
+            return False
+
+        np = _np
+        TextEmbedding = _TE
+        _DENSE_STACK_IMPORTED = True
+        _DENSE_STACK_WARNED = False
+        return True
+
+
 def _is_fastembed_available() -> bool:
-    """Check if fastembed is available. Evaluates lazily, so a correct
-    sys.path ordering at call time won't be shadowed by an early import."""
-    return np is not None and TextEmbedding is not None
+    """Check if fastembed is available.
+
+    When the ``np``/``TextEmbedding`` globals are empty (e.g. site-packages is
+    absent for the whole process lifetime, as in the gateway venv), re-attempt
+    the import via :func:`_ensure_fastembed` instead of trusting import-time
+    state. Returns True when both are bound.
+    """
+    if np is not None and TextEmbedding is not None:
+        return True
+    return _ensure_fastembed()
 
 # Backward-compatible alias for legacy users who import this constant.
 # Use _is_fastembed_available() in new code — it re-evaluates on each call.
 _FASTEMBED_AVAILABLE = _is_fastembed_available()
+_IMPORTING = False
 # Allow CI / scripted environments to redirect the fastembed cache to a
 # stable path that can be restored by actions/cache. Defaults to
 # <HERMES_HOME>/cache/fastembed, falling back to ~/.hermes/cache/fastembed
@@ -871,7 +939,7 @@ def available() -> bool:
         if base_url and not _is_openrouter_url(base_url):
             return True
         return bool(_OPENAI_API_KEY)
-    return _FASTEMBED_AVAILABLE
+    return _is_fastembed_available()
 
 
 def available_api() -> bool:
