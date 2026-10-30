@@ -893,8 +893,8 @@ def embed_query(text: str) -> Optional[np.ndarray]:
     # vector embedded under one cap must not be served after the cap changes (review #1052).
     # The backend is part of the key too: embeddings_via_api or the API URL can change at runtime,
     # and a cached local vector must not be compared against API document vectors.
-    backend = _effective_base_url() if _is_api_model(_DEFAULT_MODEL) else None
-    return _embed_query_cached(_get_prefix("query") + text, _embedding_caps(), backend)
+    api_url = _effective_base_url() if _is_api_model(_DEFAULT_MODEL) else None
+    return _embed_query_cached(_get_prefix("query") + text, _embedding_caps(), api_url)
 
 
 @lru_cache(maxsize=512)
@@ -903,7 +903,7 @@ def _embed_query_cached(
 ) -> Optional[np.ndarray]:
     if api_url is not None:
         result = _embed_api([prefixed])
-        _ensure_api_vectors(result, _effective_base_url(), 1)
+        _ensure_api_vectors(result, api_url, 1)
         return result[0]
 
     model = _get_model()
