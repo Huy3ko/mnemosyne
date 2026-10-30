@@ -58,36 +58,62 @@ def map_path(hermes_home: Optional[str] = None) -> Path:
     return data_dir(hermes_home) / MAP_FILENAME
 
 
-def _read_map(hermes_home: Optional[str] = None) -> dict:
-    """Raw map of the given home (cached by path+mtime), or ``{}``."""
+_MAP_OK = "ok"
+_MAP_ABSENT = "absent"
+_MAP_FAILED = "failed"
+
+
+def _read_map_state(hermes_home: Optional[str] = None) -> tuple[str, dict]:
+    """(status, raw map) of the given home.
+
+    ``ok``     — the file was read and parsed
+    ``absent`` — there is no map file: the feature was never switched on
+    ``failed`` — a map file exists but cannot be read or parsed
+
+    The distinction matters. A broken map must not look like an absent one:
+    "the feature is off" drops the provider back into the private profile
+    storage, which is exactly the disclosure the follow-up review forbids
+    (review follow-up F1). Only the *state* tells the two apart.
+    """
     path = map_path(hermes_home)
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        return {}
+        return _MAP_ABSENT, {}
     key = str(path)
     with _lock:
         hit = _meta_cache.get(key)
         if hit and hit[0] == mtime:
-            return hit[1]
+            return _MAP_OK, hit[1]
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        # A broken file is a failed configuration, never an empty map.
+        return _MAP_FAILED, {}
     if not isinstance(data, dict):
-        return {}
+        return _MAP_FAILED, {}
     with _lock:
         _meta_cache[key] = (mtime, data)
-    return data
+    return _MAP_OK, data
+
+
+def _read_map(hermes_home: Optional[str] = None) -> dict:
+    """Raw map of the given home (cached by path+mtime), or ``{}``."""
+    return _read_map_state(hermes_home)[1]
+
+
+def load_state(hermes_home: Optional[str] = None) -> tuple[str, dict]:
+    """(status, entries) of the map — see ``_read_map_state`` for the states."""
+    status, raw = _read_map_state(hermes_home)
+    entries = {str(k): str(v) for k, v in raw.items() if not str(k).startswith("_")}
+    with _lock:
+        _cache[str(map_path(hermes_home))] = (0.0, entries)
+    return status, entries
 
 
 def load_map(hermes_home: Optional[str] = None) -> dict:
     """Zuordnung laden (mit mtime-Cache; Datei darf zur Laufzeit geaendert werden)."""
-    raw = _read_map(hermes_home)
-    entries = {str(k): str(v) for k, v in raw.items() if not str(k).startswith("_")}
-    with _lock:
-        _cache[str(map_path(hermes_home))] = (0.0, entries)
-    return entries
+    return load_state(hermes_home)[1]
 
 
 def routing_enabled(hermes_home: Optional[str] = None) -> bool:
@@ -97,8 +123,15 @@ def routing_enabled(hermes_home: Optional[str] = None) -> bool:
     ``_unknown`` leaves the provider exactly as it is. Otherwise a deployment
     that never switched the feature on would silently start writing into a
     fresh quarantine database (review P1-2).
+
+    A map that exists but cannot be read keeps routing **on**: the broken
+    configuration is routed into the quarantine, never into the private
+    profile storage (review follow-up F1).
     """
-    return bool(load_map(hermes_home))
+    status, entries = load_state(hermes_home)
+    if status == _MAP_FAILED:
+        return True
+    return bool(entries)
 
 
 def _meta(hermes_home: Optional[str] = None) -> dict:
@@ -146,7 +179,13 @@ def _is_component_prefix(key: str, pattern: str) -> bool:
 def resolve_bank(session_key: str, hermes_home: Optional[str] = None) -> tuple[str, str]:
     """(bank, grund) fuer diesen Turn. Wirft nie; ``""`` heisst: nicht routen."""
     key = str(session_key or "").strip()
-    entries = load_map(hermes_home)
+    status, entries = load_state(hermes_home)
+    if status == _MAP_FAILED:
+        # Fail closed: the map exists but is broken. Routing into the
+        # quarantine keeps the private profile storage out of reach — a
+        # broken file must not be read as "the feature is off"
+        # (review follow-up F1).
+        return "quarantine", "map:unreadable:fail-closed"
     if not entries:
         return "", "disabled:no-map"
 

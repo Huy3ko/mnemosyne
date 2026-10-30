@@ -1595,6 +1595,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         self._memory: Optional[Any] = None
         self._provider_sync_adapter: Optional[Any] = None
         self._provider_persona_adapter: Optional[Any] = None
+        # The bank the current session actually writes into. The routed scope
+        # restores the original Beam when it ends, so the lifecycle work has
+        # to remember the bank separately (review follow-up F5).
+        self._routed_beam = None
         # Coordinates only the shared-surface Beam and adapters that retain it.
         # Construction is optimistic; publication validates this generation.
         self._surface_adapter_lock = threading.RLock()
@@ -3150,7 +3154,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         home = getattr(self, "_hermes_home", None)
         key = bank_router.cache_key(bank, home)
         if key in cache:
-            return cache[key]
+            entry = cache[key]
+            self._rebind_cached_session(entry)
+            return entry
         from mnemosyne.core.memory import Mnemosyne
         db_path = bank_router.bank_db_path(bank, home)
         mem = Mnemosyne(
@@ -3167,6 +3173,28 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             pass
         logger.info("Mnemosyne bank bound: bank=%s reason=%s db=%s", bank, reason, db_path)
         return entry
+
+    def _rebind_cached_session(self, entry) -> None:
+        """A cached bank must not keep the session id of its first visit.
+
+        The instance is cached per storage identity, so after a session
+        switch a session-scoped write would still be attributed to the
+        previous session (review follow-up F4). An explicitly configured
+        channel is preserved; an implicit one follows the session.
+        """
+        beam, mem = entry
+        session_id = str(getattr(self, "_session_id", "") or "default")
+        old_session = getattr(beam, "session_id", None)
+        if old_session == session_id:
+            return
+        implicit_channel = getattr(beam, "channel_id", None) in (None, "", old_session)
+        beam.session_id = session_id
+        if implicit_channel:
+            beam.channel_id = session_id
+        if getattr(mem, "session_id", None) != session_id:
+            mem.session_id = session_id
+            if implicit_channel and getattr(mem, "channel_id", None) in (None, "", old_session):
+                mem.channel_id = session_id
 
     def _current_bank(self) -> str:
         return str(getattr(self, "_active_bank", "") or "")
@@ -3195,6 +3223,16 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 with self._beam_session_scope_raw(session_id) as scoped:
                     yield scoped
                 return
+            if getattr(self, "_beam", None) is None:
+                # A provider without its own Beam is unavailable: a skipped
+                # context (subagent, cron, background) or a failed init.
+                # Routing must not create a bank for it — that would revive a
+                # context the runtime deliberately skipped and report a
+                # successful write where main reports memory_unavailable
+                # (review follow-up F3).
+                with self._beam_session_scope_raw(session_id) as scoped:
+                    yield scoped
+                return
             previous_bank = getattr(self, "_active_bank", None)
             previous_beam = getattr(self, "_beam", None)
             if bank == previous_bank and previous_beam is not None:
@@ -3205,6 +3243,11 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             beam, _mem = self._beam_for_bank(bank, reason)
             self._active_bank = bank
             self._beam = beam
+            # Remember the routed bank: session-end consolidation and the
+            # automatic sleep run after the scope restored the original Beam
+            # and must still target the bank that was written
+            # (review follow-up F5).
+            self._routed_beam = beam
             try:
                 with self._beam_session_scope_raw(session_id) as scoped:
                     yield scoped
@@ -3375,7 +3418,9 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
 
     def _auto_sleep_snapshot_locked(self, expected_session_id: str = ""):
         """Return one immutable auto-sleep snapshot while Beam is locked."""
-        beam_ref = self._beam
+        # The routed bank is the storage this session wrote into; the
+        # original Beam was restored when the scope ended (review F5).
+        beam_ref = getattr(self, "_routed_beam", None) or self._beam
         if beam_ref is None:
             return None
         if expected_session_id and beam_ref.session_id != expected_session_id:
@@ -3662,6 +3707,18 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
     def _handle_persona_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
         try:
             adapter = getattr(self, "_provider_persona_adapter", None)
+            if adapter is not None and getattr(adapter, "_beam", None) is not self._beam:
+                # The adapter holds the Beam it was built with. After a
+                # session switch it would read the previous chat's bank
+                # (review follow-up F2). Rebuild it for the active Beam.
+                shutdown = getattr(adapter, "shutdown", None)
+                if callable(shutdown):
+                    try:
+                        shutdown()
+                    except Exception:
+                        pass
+                adapter = None
+                self._provider_persona_adapter = None
             if adapter is None:
                 from mnemosyne_hermes.persona_adapter import PersonaAdapter
                 adapter = PersonaAdapter(self._beam, {})
@@ -5437,7 +5494,10 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                 if skip is not None:
                     logger.info("Mnemosyne session-end sleep skipped: %s", json.dumps(skip))
                     return
-                beam = self._beam
+                # The routed bank is the storage this session wrote into;
+                # the original Beam was restored when the scope ended
+                # (review follow-up F5).
+                beam = getattr(self, "_routed_beam", None) or self._beam
                 if beam is None:
                     return
                 sleep_args = {
@@ -5560,6 +5620,23 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
                     logger.debug("Mnemosyne: could not close audit log", exc_info=True)
             self._audit = None
             self._beam = None
+            # The cached bank instances hold their own database connections
+            # and the routed beam. They must not survive the shutdown of the
+            # provider (review follow-up: cleanup was not addressed).
+            bank_cache = getattr(self, "_bank_cache", None)
+            if bank_cache:
+                for _cached in list(bank_cache.values()):
+                    _beam_ref, _mem = _cached
+                    close = getattr(_mem, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            logger.debug(
+                                "Mnemosyne: could not close cached bank", exc_info=True
+                            )
+                bank_cache.clear()
+            self._routed_beam = None
 
         # C13: decrement this instance's contribution to the module-level
         # active-provider count. ``_provider_active`` stays True if other
