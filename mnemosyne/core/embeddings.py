@@ -972,6 +972,12 @@ def embed_query(text: str) -> Optional[np.ndarray]:
     # The backend is part of the key too: embeddings_via_api or the API URL can change at runtime,
     # and a cached local vector must not be compared against API document vectors.
     api_url = _effective_base_url() if _is_api_model(_DEFAULT_MODEL) else None
+    if api_url is None:
+        # Direct callers never touch available(), so retry the dense-stack
+        # import here: otherwise a warm cached None from the outage keeps being
+        # served after the stack recovers. A successful bind also drops those
+        # stale entries (see _ensure_fastembed).
+        _is_fastembed_available()
     return _embed_query_cached(_get_prefix("query") + text, _embedding_caps(), api_url)
 
 

@@ -193,3 +193,42 @@ def test_import_failure_warns_exactly_once(monkeypatch, caplog):
 
     # Leave the module in a clean, bound state for sibling tests.
     importlib.reload(embeddings)
+
+
+def test_embed_query_recovers_without_calling_available(monkeypatch, tmp_path):
+    """A direct caller never touches available(); embed_query() must retry anyway.
+
+    Regression for the follow-up review: embed_query() served a cached None from
+    the outage even after the dense stack was importable again, because only
+    available()/_get_model() re-attempt the import.
+    """
+    for key in (
+        "MNEMOSYNE_NO_EMBEDDINGS",
+        "MNEMOSYNE_SKIP_EMBEDDINGS",
+        "MNEMOSYNE_EMBEDDINGS_OFF",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(embeddings, "_FASTEMBED_CACHE_DIR", str(tmp_path / "cache"))
+
+    query = "mnemosyne direct embed_query recovery probe"
+    original_path = list(sys.path)
+    original_import = builtins.__import__
+    previous_modules = None
+    try:
+        builtins.__import__ = _make_blocked_import(original_import)
+        importlib.reload(embeddings)
+
+        assert embeddings.embed_query(query) is None
+        assert embeddings.embed_query(query) is None  # served from the cache
+
+        previous_modules, _ = _install_stub_dense_stack()
+        builtins.__import__ = original_import
+
+        # No available() call in between: this must still recover.
+        assert embeddings.embed_query(query) is not None
+    finally:
+        builtins.__import__ = original_import
+        sys.path[:] = original_path
+        if previous_modules is not None:
+            _restore_stub_dense_stack(previous_modules)
+        importlib.reload(embeddings)
