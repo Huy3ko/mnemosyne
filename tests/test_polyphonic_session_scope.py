@@ -9,7 +9,9 @@ Grid: cut site x visibility mode.
 - Cut sites: the working-memory vector scan, the temporal voice's LIMIT 20,
   and the fused top-K cut (fed here by a graph voice, whose stores have no
   session column). The episodic vector voice is not a cell: it already
-  applies ``episodic_where`` (with the same scope) before its limits.
+  applies ``episodic_where`` before its limits. One accepted exception: that
+  predicate drops episodic rows with a NULL session_id, which the post-filter
+  would keep. The linear path drops them too, so it is left as it was.
 - Plus one dual-tier cell: an id whose working row is foreign but whose
   episodic row is in scope must survive the fused cut.
 - Visibility modes, each a target row the caller must see, ranked below 30
@@ -174,3 +176,30 @@ def test_fused_cut_keeps_id_in_scope_in_either_tier(env):
     monkeypatch.setattr(PolyphonicRecallEngine, "_graph_voice", graph_voice)
     results = caller.recall("quokka", top_k=1)
     assert [(r["id"], r["tier"]) for r in results] == [(target_id, "episodic")]
+
+
+def test_fused_cut_prune_stays_under_sqlite_variable_limit(env):
+    # Older SQLite builds allow 999 bound variables; a graph voice can name
+    # more ids than that, and the prune must neither fail nor be skipped.
+    import sqlite3
+
+    caller, other, monkeypatch = env
+    monkeypatch.setenv("MNEMOSYNE_VOICE_GRAPH", "1")
+    target_id = caller.remember("target recent quokka", source="user", dedupe=False)
+    noise_ids = [f"noise-{i}" for i in range(1200)]
+    caller.conn.executemany(
+        # scope defaults to 'global' in the table; remember() writes 'session'.
+        "INSERT INTO working_memory (id, content, source, timestamp, session_id, importance, scope) "
+        "VALUES (?, ?, 'user', datetime('now'), ?, 0.5, 'session')",
+        [(mid, f"noise quokka {mid}", OTHER) for mid in noise_ids],
+    )
+    caller.conn.commit()
+    caller.conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 1000)
+    ranked = [*noise_ids, target_id]
+
+    def graph_voice(self, query):
+        return [RecallResult(memory_id=mid, score=1.0 - i / 10000, voice="graph", metadata={})
+                for i, mid in enumerate(ranked)]
+
+    monkeypatch.setattr(PolyphonicRecallEngine, "_graph_voice", graph_voice)
+    assert [r["id"] for r in caller.recall("quokka", top_k=1)] == [target_id]

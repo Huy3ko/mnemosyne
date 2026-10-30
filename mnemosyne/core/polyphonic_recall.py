@@ -1085,19 +1085,26 @@ class PolyphonicRecallEngine:
 
         try:
             memory_ids = tuple(results)
-            placeholders = ", ".join("?" for _ in memory_ids)
             in_scope, out_of_scope = set(), set()
             for table in ("working_memory", "episodic_memory"):
-                try:
+                # A standalone engine may point at a store without one of the
+                # tiers; any other failure must surface, or foreign rows would
+                # silently fill the fused cut again.
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone() is None:
+                    continue
+                # Chunked under SQLite's bound-variable limit, as the vec scans do.
+                for offset in range(0, len(memory_ids), 900):
+                    chunk = memory_ids[offset : offset + 900]
+                    placeholders = ", ".join("?" for _ in chunk)
                     rows = conn.execute(
                         f"SELECT id, ({scope_where}) AS visible FROM {table} "
                         f"WHERE id IN ({placeholders})",
-                        (*scope_params, *memory_ids),
+                        (*scope_params, *chunk),
                     ).fetchall()
-                except sqlite3.OperationalError:
-                    continue
-                for row in rows:
-                    (in_scope if row["visible"] else out_of_scope).add(row["id"])
+                    for row in rows:
+                        (in_scope if row["visible"] else out_of_scope).add(row["id"])
             for memory_id in out_of_scope - in_scope:
                 del results[memory_id]
         finally:

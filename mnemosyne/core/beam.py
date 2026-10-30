@@ -11816,19 +11816,10 @@ class BeamMemory:
         # in-loop construction this commit removed was reinforcing the
         # gap; rebuilding from `final` post-dedup is the right shape, so
         # add the scope guard here too.
-        if channel_id:
-            rec_scope = _session_scope_filter("channel_id", cross_session=cross_session)
-        elif author_id or author_type:
-            rec_scope = "(1=1)"
-        else:
-            rec_scope = _session_scope_filter(cross_session=cross_session)
-
-        def _rec_scope_params() -> List:
-            if channel_id:
-                return _session_scope_params(self.session_id, channel_id, cross_session=cross_session)
-            if author_id or author_type:
-                return []
-            return _session_scope_params(self.session_id, cross_session=cross_session)
+        rec_scope, rec_scope_params = _recall_scope_where(
+            session_id=self.session_id, cross_session=cross_session,
+            author_id=author_id, author_type=author_type, channel_id=channel_id,
+        )
 
         # Update recall_count / last_recalled for engine results too --
         # the linear path updates them and downstream features (decay
@@ -11836,7 +11827,7 @@ class BeamMemory:
         # /review caught the missing update as a silent telemetry loss.
         if _track_recall and recalled_episodic_ids:
             placeholders = ",".join("?" * len(recalled_episodic_ids))
-            params = [now_iso, *recalled_episodic_ids, *_rec_scope_params()]
+            params = [now_iso, *recalled_episodic_ids, *rec_scope_params]
             self.conn.execute(
                 f"UPDATE episodic_memory SET recall_count = recall_count + 1, "
                 f"last_recalled = ? WHERE id IN ({placeholders}) AND {rec_scope}",
@@ -11844,7 +11835,7 @@ class BeamMemory:
             )
         if _track_recall and recalled_working_ids:
             placeholders = ",".join("?" * len(recalled_working_ids))
-            params = [now_iso, *recalled_working_ids, *_rec_scope_params()]
+            params = [now_iso, *recalled_working_ids, *rec_scope_params]
             self.conn.execute(
                 f"UPDATE working_memory SET recall_count = recall_count + 1, "
                 f"last_recalled = ? WHERE id IN ({placeholders}) AND {rec_scope}",
