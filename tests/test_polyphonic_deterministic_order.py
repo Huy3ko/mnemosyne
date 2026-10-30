@@ -14,9 +14,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("numpy")
-
-from mnemosyne.core.episodic_graph import EpisodicGraph, Gist, GraphEdge  # noqa: E402
+from mnemosyne.core.episodic_graph import EpisodicGraph, Gist, GraphEdge
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HASH_SEEDS = range(8)
