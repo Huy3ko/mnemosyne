@@ -104,10 +104,19 @@ def test_bank_db_path_stays_inside_data_dir(router):
     assert path.parent.parent.name == "banks"
 
 
-def test_missing_map_degrades_to_quarantine(tmp_path, monkeypatch):
-    """No map file must never open a private bank."""
+def test_missing_map_disables_routing(tmp_path, monkeypatch):
+    """No map file means the feature is off, not "quarantine everybody".
+
+    Earlier revisions resolved an unmapped chat to ``quarantine`` even when no
+    map existed, so a deployment that never enabled per-chat routing silently
+    began writing into a fresh quarantine database. Routing is a switch:
+    without entries the provider keeps its existing bank and creates nothing
+    (review P1-2).
+    """
     monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("MNEMOSYNE_BANKS_MAP", str(tmp_path / "does-not-exist.json"))
     mod = _load_bank_router()
     mod._cache.clear()
-    assert mod.resolve_bank("agent:main:telegram:dm:111")[0] == "quarantine"
+    bank, reason = mod.resolve_bank("agent:main:telegram:dm:111")
+    assert bank == ""
+    assert reason == "disabled:no-map"
