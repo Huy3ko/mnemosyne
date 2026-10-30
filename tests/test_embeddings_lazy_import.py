@@ -21,8 +21,6 @@ import logging
 import os
 import sys
 
-import pytest
-
 from mnemosyne.core import embeddings
 
 
