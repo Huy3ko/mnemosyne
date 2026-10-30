@@ -891,12 +891,17 @@ def embed_query(text: str) -> Optional[np.ndarray]:
         return None
     # The effective caps are part of the key: _embed_api reads MNEMOSYNE_EMBEDDING_MAX_CHARS / _BYTES at call time, so a
     # vector embedded under one cap must not be served after the cap changes (review #1052).
-    return _embed_query_cached(_get_prefix("query") + text, _embedding_caps())
+    # The backend is part of the key too: embeddings_via_api or the API URL can change at runtime,
+    # and a cached local vector must not be compared against API document vectors.
+    backend = _effective_base_url() if _is_api_model(_DEFAULT_MODEL) else None
+    return _embed_query_cached(_get_prefix("query") + text, _embedding_caps(), backend)
 
 
 @lru_cache(maxsize=512)
-def _embed_query_cached(prefixed: str, _caps: tuple = (0, 0)) -> Optional[np.ndarray]:
-    if _is_api_model(_DEFAULT_MODEL):
+def _embed_query_cached(
+    prefixed: str, _caps: tuple = (0, 0), api_url: Optional[str] = None
+) -> Optional[np.ndarray]:
+    if api_url is not None:
         result = _embed_api([prefixed])
         _ensure_api_vectors(result, _effective_base_url(), 1)
         return result[0]
