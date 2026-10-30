@@ -156,6 +156,17 @@ def test_compare_is_advisory_and_allows_revision_time_sample_changes(report):
     assert bench.compare(slower, report)["p50_latency_change_pct"] == 50
     assert bench.compare(slower, report)["p95_latency_change_pct"] == 100
 
+    faster = copy.deepcopy(report)
+    faster["summary"]["latency_ms"]["p50"] = 0.5
+    faster["summary"]["latency_ms"]["p95"] = 1
+    comparison = bench.compare(faster, report)
+    assert comparison["p50_latency_change_pct"] == -50
+    assert comparison["p95_latency_change_pct"] == -50
+
+    identical = bench.compare(report, report)
+    assert identical["p50_latency_change_pct"] == 0
+    assert identical["p95_latency_change_pct"] == 0
+
 
 @pytest.mark.parametrize("missing", [False, True])
 def test_compare_rejects_changed_or_missing_metadata(report, missing):
