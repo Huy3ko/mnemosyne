@@ -1143,17 +1143,34 @@ def _recall_scope_where(
     )
 
 
-def _polyphonic_scope_where(**scope) -> Tuple[str, List[Any]]:
+def _polyphonic_scope_where(
+    *,
+    session_id: str,
+    cross_session: bool,
+    author_id: Optional[str] = None,
+    author_type: Optional[str] = None,
+    channel_id: Optional[str] = None,
+) -> Tuple[str, List[Any]]:
     """Scope predicate the polyphonic voices apply before their own limits.
 
     It must never be stricter than _polyphonic_row_passes_filters, which
     keeps rows whose session_id is NULL (import writes NULL when an export
-    carries one), so those rows are let through here too.
+    carries one), so those rows are let through here too. The exact author
+    and channel filters match the post-filter's equality checks.
     """
-    clause, params = _recall_scope_where(**scope)
-    if clause == "(1=1)":
-        return clause, params
-    return f"({clause} OR session_id IS NULL)", params
+    clause, params = _recall_scope_where(
+        session_id=session_id, cross_session=cross_session,
+        author_id=author_id, author_type=author_type, channel_id=channel_id,
+    )
+    if clause != "(1=1)":
+        clause = f"({clause} OR session_id IS NULL)"
+    clauses = [clause]
+    for column, value in (("author_id", author_id), ("author_type", author_type),
+                          ("channel_id", channel_id)):
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    return " AND ".join(clauses), params
 
 
 def _episodic_recall_where(

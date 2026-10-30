@@ -21,8 +21,9 @@ Grid: cut site x visibility mode.
   target in another session with scope='global';
   target with a NULL session_id (import can write one), which the post-filter keeps;
   cross-session on, where the noise is visible too and must not be filtered out;
-  author-only recall, which has no session scope, so a target from another
-  session by that author must not be filtered out.
+  author-only recall, which has no session scope: a target from another
+  session by that author must not be filtered out, nor starved by other authors;
+  a channel recall whose noise is the caller's own session on another channel.
 """
 import numpy as np
 import pytest
@@ -72,51 +73,51 @@ def _set(beam, memory_id, **columns):
     beam.conn.commit()
 
 
-# Each mode: (target writer, target columns, noise columns, recall kwargs, cross-session).
+# Each mode: (target writer, target columns, noise writer, noise columns,
+# recall kwargs, cross-session).
 MODES = {
-    "own-session": ("caller", {}, {}, {}, False),
-    "channel": ("other", {"channel_id": "c1"}, {"channel_id": "c2"}, {"channel_id": "c1"}, False),
-    "global": ("other", {"scope": "global"}, {}, {}, False),
-    "null-session": ("other", {"session_id": None}, {}, {}, False),
-    "cross-session": ("other", {}, {}, {}, True),
-    "author-only": ("other", {"author_id": "a1"}, {"author_id": "a1"}, {"author_id": "a1"}, False),
+    "own-session": ("caller", {}, "other", {}, {}, False),
+    "channel": ("other", {"channel_id": "c1"}, "other", {"channel_id": "c2"}, {"channel_id": "c1"}, False),
+    "channel-own-session-noise": ("other", {"channel_id": "c1"}, "caller", {"channel_id": "c2"},
+                                  {"channel_id": "c1"}, False),
+    "global": ("other", {"scope": "global"}, "other", {}, {}, False),
+    "null-session": ("other", {"session_id": None}, "other", {}, {}, False),
+    "cross-session": ("other", {}, "other", {}, {}, True),
+    "author-only": ("other", {"author_id": "a1"}, "other", {"author_id": "a2"}, {"author_id": "a1"}, False),
 }
 
 
 def _seed(caller, other, mode, target_first):
-    writer, target_cols, noise_cols, _, _ = MODES[mode]
+    writer, target_cols, noise_writer, noise_cols, _, _ = MODES[mode]
     target_beam = caller if writer == "caller" else other
+    noise_beam = caller if noise_writer == "caller" else other
     noise_ids = []
     target_id = None
     if target_first:
         target_id = target_beam.remember("target recent quokka", source="user", dedupe=False)
     for i in range(NOISE):
-        noise_ids.append(other.remember(f"noise recent quokka {i} n{i}", source="user", dedupe=False))
+        noise_ids.append(noise_beam.remember(f"noise recent quokka {i} n{i}", source="user", dedupe=False))
     if not target_first:
         target_id = target_beam.remember("target recent quokka", source="user", dedupe=False)
     _set(target_beam, target_id, **target_cols)
     for noise_id in noise_ids:
-        _set(other, noise_id, **noise_cols)
+        _set(noise_beam, noise_id, **noise_cols)
     return target_id, set(noise_ids)
 
 
 def _check(results, mode, target_id, noise_ids):
     ids = [r["id"] for r in results]
-    if MODES[mode][4]:
+    if MODES[mode][5]:
         # Cross-session: the noise is visible, so it legitimately outranks the target.
         assert set(ids) & noise_ids
-    elif mode == "author-only":
-        # Author-only recall has no session scope; the scope must not hide either side.
-        assert target_id in ids or set(ids) & noise_ids
-        assert set(ids) <= noise_ids | {target_id}
     else:
         assert target_id in ids
         assert not set(ids) & noise_ids
 
 
 def _recall(caller, monkeypatch, mode, query):
-    kwargs = MODES[mode][3]
-    if MODES[mode][4]:
+    kwargs = MODES[mode][4]
+    if MODES[mode][5]:
         monkeypatch.setenv("MNEMOSYNE_CROSS_SESSION", "1")
     return caller.recall(query, top_k=1, **kwargs)
 
