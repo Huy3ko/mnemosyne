@@ -26,7 +26,11 @@ Grid: cut site x visibility mode.
   author-type-only recall, which must retain matching rows from another session;
   combined channel and author recall, which must reject other authors on the same
   channel and the same author on another channel;
-  a channel recall whose noise is the caller's own session on another channel.
+  a channel recall whose noise is the caller's own session on another channel;
+  a veracity or memory_type filter, where target and noise are both the
+  caller's own and only the filter tells them apart (#1278). The post-filter
+  compares these with plain equality, and both tiers always have the columns,
+  so the pushed-down ``=`` keeps exactly the rows the post-filter keeps.
 """
 import sqlite3
 
@@ -98,6 +102,10 @@ MODES = {
         "other", {"channel_id": "c1", "author_id": "a1"},
         "other", {"channel_id": "c2", "author_id": "a1"},
         {"channel_id": "c1", "author_id": "a1"}, False),
+    "veracity": ("caller", {"veracity": "stated"}, "caller", {"veracity": "inferred"},
+                 {"veracity": "stated"}, False),
+    "memory_type": ("caller", {"memory_type": "artifact"}, "caller", {"memory_type": "episode"},
+                    {"memory_type": "artifact"}, False),
 }
 
 
