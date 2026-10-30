@@ -7,14 +7,17 @@ is unreachable (the Hermes plugin-loader import window, or a venv without the
 embeddings extra), both globals bind to None and ``available()`` returns False
 for the whole process lifetime, even after the stack becomes importable.
 
-These tests pin the fix: ``available()`` must re-attempt the import when the
-globals are empty, so dense retrieval self-heals without a reload; a failing
-import must log exactly one warning naming the failing module instead of
-silently returning False.
+These tests pin three behaviours:
+1. ``available()`` re-attempts the import when the globals are empty, so dense
+   retrieval self-heals without a reload;
+2. a failing import logs exactly one warning naming the failing module rather
+   than degrading silently;
+3. a query memoised as ``None`` during the outage is dropped on recovery, so it
+   is recomputed instead of returning the stale failure forever.
 
 The tests install stub ``numpy``/``fastembed`` modules, so they do NOT require
-the optional ``embeddings`` extra to run — only the retry behaviour is under
-test here, not real embedding quality.
+the optional ``embeddings`` extra to run — the retry and cache behaviour is what
+is under test, not real embedding quality.
 """
 from __future__ import annotations
 
@@ -48,28 +51,41 @@ def _make_blocked_import(original_import):
     return _blocked_import
 
 
+class _StubVector(list):
+    """Minimal stand-in for ``numpy.ndarray`` on the query path."""
+
+    def astype(self, dtype):
+        return self
+
+
+class _StubTextEmbedding:
+    """Produces deterministic vectors without loading a real model."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def embed(self, texts):
+        return [_StubVector([0.1, 0.2, 0.3]) for _ in texts]
+
+
 def _install_stub_dense_stack():
     """Register stub ``numpy``/``fastembed`` modules and return the previous entries.
 
-    Using stubs keeps the recovery assertion independent of whether the optional
+    Using stubs keeps the recovery assertions independent of whether the optional
     ``embeddings`` extra is installed, which is the state a CI run without it is
     in. The previous entries (possibly None) are restored by the caller.
     """
     np_stub = types.ModuleType("numpy")
     setattr(np_stub, "__version__", "0.0.0-stub")
+    setattr(np_stub, "float32", "float32")
 
     fastembed_stub = types.ModuleType("fastembed")
-
-    class TextEmbedding:  # noqa: N801 - mirrors the real export name
-        def __init__(self, *args, **kwargs):
-            pass
-
-    setattr(fastembed_stub, "TextEmbedding", TextEmbedding)
+    setattr(fastembed_stub, "TextEmbedding", _StubTextEmbedding)
 
     previous = {name: sys.modules.get(name) for name in _DENSE_MODULES}
     sys.modules["numpy"] = np_stub
     sys.modules["fastembed"] = fastembed_stub
-    return previous, (np_stub, TextEmbedding)
+    return previous, (np_stub, _StubTextEmbedding)
 
 
 def _restore_stub_dense_stack(previous):
@@ -80,14 +96,17 @@ def _restore_stub_dense_stack(previous):
             sys.modules[name] = module
 
 
-def test_available_self_heals_after_dense_stack_returns(monkeypatch):
+def test_available_self_heals_after_dense_stack_returns(monkeypatch, tmp_path):
     for key in (
         "MNEMOSYNE_NO_EMBEDDINGS",
         "MNEMOSYNE_SKIP_EMBEDDINGS",
         "MNEMOSYNE_EMBEDDINGS_OFF",
     ):
         monkeypatch.delenv(key, raising=False)
+    # Keep the stub model's cache dir out of the real home directory.
+    monkeypatch.setattr(embeddings, "_FASTEMBED_CACHE_DIR", str(tmp_path / "cache"))
 
+    query = "mnemosyne lazy import cache probe"
     original_path = list(sys.path)
     original_import = builtins.__import__
     previous_modules = None
@@ -104,9 +123,14 @@ def test_available_self_heals_after_dense_stack_returns(monkeypatch):
         assert embeddings.TextEmbedding is None
         assert embeddings._FASTEMBED_AVAILABLE is False
 
-        # The stack becomes importable again. With the real extra installed the
-        # bindings come from it; without it (CI, minimal install) the stubs
-        # stand in. Either way the retry must happen without a reload.
+        # A query taken during the outage is memoised as None ...
+        assert embeddings.embed_query(query) is None
+        cached_before = embeddings._embed_query_cached.cache_info()
+        assert cached_before.currsize == 1, cached_before
+
+        # ... and the stack becomes importable again. With the real extra
+        # installed the bindings come from it; without it (CI, minimal install)
+        # the stubs stand in. Either way the retry happens without a reload.
         previous_modules, (stub_np, stub_text_embedding) = _install_stub_dense_stack()
         builtins.__import__ = original_import
 
@@ -114,6 +138,22 @@ def test_available_self_heals_after_dense_stack_returns(monkeypatch):
         assert embeddings.np is stub_np
         assert embeddings.TextEmbedding is stub_text_embedding
         assert embeddings._FASTEMBED_AVAILABLE is False  # frozen alias, unused
+
+        # The stale None must be gone: without cache_clear() on recovery this
+        # entry survives (currsize 1) and the query keeps returning the cached
+        # failure forever.
+        cached_after = embeddings._embed_query_cached.cache_info()
+        assert cached_after.currsize == 0, cached_after
+
+        # And the same query now recomputes instead of serving the stale miss.
+        # cache_clear() also resets the statistics, so the fresh cache holds
+        # exactly one entry, one miss and no hits; without cache_clear() the
+        # second call would be a HIT returning the stale None.
+        assert embeddings.embed_query(query) is not None
+        recomputed = embeddings._embed_query_cached.cache_info()
+        assert recomputed.misses == 1, recomputed
+        assert recomputed.hits == 0, recomputed
+        assert recomputed.currsize == 1, recomputed
     finally:
         builtins.__import__ = original_import
         sys.path[:] = original_path
