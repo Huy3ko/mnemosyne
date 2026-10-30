@@ -76,7 +76,7 @@ def test_seed_has_fixed_corpus_and_no_ingestion_side_effects():
 
 
 @pytest.mark.parametrize("option", [
-    "--rows-per-tier", "--top-k", "--warmup-cycles", "--cycles-per-round", "--rounds",
+    "--rows-per-tier", "--top-k", "--warmup-cycles", "--cycles-per-round", "--rounds", "--timeout",
 ])
 @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
 def test_cli_rejects_invalid_counts(option, value):
@@ -109,6 +109,8 @@ def test_real_cli_isolated_linear_report_and_baseline(tmp_path):
     report = json.loads(result.stdout)
     assert json.loads(output.read_text(encoding="utf-8")) == report
     assert "must-not-appear-in-report" not in result.stdout
+    assert "must-not-appear-in-report" not in result.stderr
+    assert "must-not-appear-in-report" not in output.read_text(encoding="utf-8")
     assert list(ambient.iterdir()) == [config]
     assert config.read_text(encoding="utf-8") == "polyphonic_recall: true\nrecall_content_cap: 1\n"
     assert report["validation"]["engine"] == "linear"
@@ -121,7 +123,8 @@ def test_real_cli_isolated_linear_report_and_baseline(tmp_path):
     assert all(0 < count <= 10 for batch in report["result_counts"] for count in batch)
     assert report["summary"] == bench.summarize(report["samples_ns"], report["round_elapsed_ns"])
     assert report["environment"]["machine_label"] == "pytest-machine"
-    assert len(report["revision"]["commit"]) == 40
+    commit = report["revision"]["commit"]
+    assert commit is None or (len(commit) == 40 and all(c in "0123456789abcdef" for c in commit))
 
     second = subprocess.run(command + ["--baseline", str(output)], env=env,
                             capture_output=True, text=True, encoding="utf-8",
@@ -130,14 +133,98 @@ def test_real_cli_isolated_linear_report_and_baseline(tmp_path):
     assert compared["comparison"]["compatible"] is True
     assert "median_qps_change_pct" in compared["comparison"]
 
-    # A slower compatible report is still advisory, never a failed timing gate.
+@pytest.fixture
+def report():
+    return {
+        "schema_version": 1, "benchmark": "test", "harness_sha256": "hash",
+        "environment": {}, "settings": {}, "validation": {}, "workload": {},
+        "sqlite_pragmas": {}, "revision": {"commit": "reference", "dirty": False},
+        "recorded_at_utc": "reference-time", "samples_ns": [[10]],
+        "summary": {"median_qps": 100, "latency_ms": {"p50": 1, "p95": 2}},
+    }
+
+
+def test_compare_is_advisory_and_allows_revision_time_sample_changes(report):
     slower = copy.deepcopy(report)
     slower["summary"]["median_qps"] /= 2
+    slower.update(revision={"commit": "candidate", "dirty": True},
+                  recorded_at_utc="candidate-time", samples_ns=[[20]])
+    assert bench.compare(slower, report)["compatible"] is True
     assert bench.compare(slower, report)["median_qps_change_pct"] == -50
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_compare_rejects_changed_or_missing_metadata(report, missing):
     for field in ("workload", "environment", "settings", "validation", "sqlite_pragmas",
                   "benchmark", "harness_sha256"):
         changed = copy.deepcopy(report)
-        changed[field] = None
+        if missing:
+            del changed[field]
+        else:
+            changed[field] = None
         assert bench.compare(report, changed) == {
             "compatible": False, "mismatched_fields": [field],
         }
+
+
+@pytest.mark.parametrize("error", [
+    OSError("missing git"), subprocess.CalledProcessError(1, ["git"]),
+    subprocess.TimeoutExpired(["git"], 10),
+])
+def test_revision_falls_back_without_git_or_on_timeout(monkeypatch, error):
+    def fail(*args, **kwargs):
+        assert kwargs["timeout"] == 10
+        raise error
+    monkeypatch.setattr(bench.subprocess, "run", fail)
+    assert bench.revision() == {"commit": None, "dirty": None}
+
+
+def test_direct_worker_requires_pinned_settings(monkeypatch):
+    monkeypatch.delenv("MNEMOSYNE_POLYPHONIC_RECALL", raising=False)
+    with pytest.raises(RuntimeError, match="isolate configuration"):
+        bench.main(["--worker", "--machine", "test"])
+
+
+@pytest.mark.parametrize("contents", [None, "not json", "[]", "{}",
+                                      '{"revision": {}, "summary": null}'])
+def test_baseline_errors_fail_before_worker(tmp_path, monkeypatch, capsys, contents):
+    baseline = tmp_path / "baseline.json"
+    if contents is not None:
+        baseline.write_text(contents, encoding="utf-8")
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid baseline must not start a worker")
+    monkeypatch.setattr(bench.subprocess, "run", unexpected)
+    output = tmp_path / "output.json"
+    with pytest.raises(SystemExit) as exc:
+        bench.main(["--machine", "test", "--baseline", str(baseline), "--output", str(output)])
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert "cannot load --baseline" in captured.err
+    assert not captured.out
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "1"])
+def test_baseline_rejects_invalid_divisors(tmp_path, report, value):
+    report["summary"]["median_qps"] = value
+    path = tmp_path / "baseline.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    with pytest.raises(ValueError, match="finite positive"):
+        bench.load_baseline(path)
+
+
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_worker_failure_publishes_no_report(tmp_path, monkeypatch, capsys, timed_out):
+    def fail(command, **kwargs):
+        assert kwargs["timeout"] == 7
+        if timed_out:
+            raise subprocess.TimeoutExpired(command, 7)
+        return subprocess.CompletedProcess(command, 3, stdout="", stderr="worker failed\n")
+    monkeypatch.setattr(bench.subprocess, "run", fail)
+    output = tmp_path / "output.json"
+    code = bench.main(["--machine", "test", "--timeout", "7", "--output", str(output)])
+    assert code == (1 if timed_out else 3)
+    captured = capsys.readouterr()
+    assert ("timed out after 7 seconds" if timed_out else "worker failed") in captured.err
+    assert not captured.out
+    assert not output.exists()

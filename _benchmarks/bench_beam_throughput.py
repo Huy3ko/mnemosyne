@@ -50,6 +50,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--warmup-cycles", type=positive_int, default=3)
     ap.add_argument("--cycles-per-round", type=positive_int, default=10)
     ap.add_argument("--rounds", type=positive_int, default=5)
+    ap.add_argument("--timeout", type=positive_int, default=600,
+                    help="Worker time limit in seconds, including setup (default: 600)")
     ap.add_argument("--output", type=Path, help="Save JSON (stdout always contains the report)")
     ap.add_argument("--baseline", type=Path, help="Compare a compatible JSON report; no timing gate")
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
@@ -98,12 +100,12 @@ def revision() -> dict:
     def git(*args):
         result = subprocess.run(
             ["git", "-C", str(ROOT), *args], capture_output=True, text=True,
-            encoding="utf-8", errors="replace", check=True,
+            encoding="utf-8", errors="replace", check=True, timeout=10,
         )
         return result.stdout.strip()
     try:
         return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain"))}
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return {"commit": None, "dirty": None}
 
 
@@ -224,14 +226,38 @@ def compare(report: dict, baseline: dict) -> dict:
     }
 
 
+def load_baseline(path: Path) -> dict:
+    """Reject unreadable reports/invalid divisors before doing any measured work."""
+    baseline = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        if not isinstance(baseline["revision"], dict):
+            raise ValueError("revision must be an object")
+        summary = baseline["summary"]
+        for value in (summary["median_qps"], summary["latency_ms"]["p50"],
+                      summary["latency_ms"]["p95"]):
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value <= 0):
+                raise ValueError("comparison metrics must be finite positive numbers")
+    except (KeyError, TypeError) as exc:
+        raise ValueError("expected a benchmark report with revision and summary metrics") from exc
+    return baseline
+
+
 def main(argv=None) -> int:
-    args = parser().parse_args(argv)
+    ap = parser()
+    args = ap.parse_args(argv)
     if args.worker:
         # Keep the JSON channel usable even if an optional backend prints at import.
         with contextlib.redirect_stdout(sys.stderr):
             report = worker(args)
         print(json.dumps(report, allow_nan=False))
         return 0
+    baseline = None
+    if args.baseline:
+        try:
+            baseline = load_baseline(args.baseline)
+        except (OSError, UnicodeError, ValueError) as exc:
+            ap.error(f"cannot load --baseline: {exc}")
     with tempfile.TemporaryDirectory(prefix="mnemosyne-throughput-") as tmp:
         env = {key: value for key, value in os.environ.items() if not key.startswith("MNEMOSYNE_")}
         env.update(SETTINGS)
@@ -243,14 +269,20 @@ def main(argv=None) -> int:
             "--warmup-cycles", str(args.warmup_cycles),
             "--cycles-per-round", str(args.cycles_per_round), "--rounds", str(args.rounds),
         ]
-        result = subprocess.run(command, env=env, capture_output=True, text=True, encoding="utf-8")
+        try:
+            result = subprocess.run(command, env=env, capture_output=True, text=True,
+                                    encoding="utf-8", timeout=args.timeout)
+        except subprocess.TimeoutExpired:
+            print(f"Benchmark worker timed out after {args.timeout} seconds; "
+                  "increase --timeout for larger workloads.", file=sys.stderr)
+            return 1
         if result.stderr:
             print(result.stderr, file=sys.stderr, end="")
         if result.returncode:
             return result.returncode
         report = json.loads(result.stdout)
-    if args.baseline:
-        report["comparison"] = compare(report, json.loads(args.baseline.read_text(encoding="utf-8")))
+    if baseline is not None:
+        report["comparison"] = compare(report, baseline)
     payload = json.dumps(report, indent=2, allow_nan=False) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
