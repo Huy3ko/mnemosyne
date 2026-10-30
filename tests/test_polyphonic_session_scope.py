@@ -24,7 +24,8 @@ Grid: cut site x visibility mode.
   author-only recall, which has no session scope: a target from another
   session by that author must not be filtered out, nor starved by other authors;
   author-type-only recall, which must retain matching rows from another session;
-  combined channel and author recall, which must reject other authors on the same channel;
+  combined channel and author recall, which must reject other authors on the same
+  channel and the same author on another channel;
   a channel recall whose noise is the caller's own session on another channel.
 """
 import sqlite3
@@ -93,6 +94,10 @@ MODES = {
     "channel-and-author": ("other", {"channel_id": "c1", "author_id": "a1"},
                            "other", {"channel_id": "c1", "author_id": "a2"},
                            {"channel_id": "c1", "author_id": "a1"}, False),
+    "channel-and-author-wrong-channel": (
+        "other", {"channel_id": "c1", "author_id": "a1"},
+        "other", {"channel_id": "c2", "author_id": "a1"},
+        {"channel_id": "c1", "author_id": "a1"}, False),
 }
 
 
