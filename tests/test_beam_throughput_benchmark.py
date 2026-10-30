@@ -13,6 +13,7 @@ from _benchmarks import bench_beam_throughput as bench
 
 
 def test_summary_uses_nearest_rank_and_whole_round_wall_time():
+    """Quantiles use nearest ranks and QPS includes the entire round duration."""
     batches = [[i * 1_000_000 for i in range(1, 11)],
                [i * 1_000_000 for i in range(11, 21)]]
     result = bench.summarize(batches, [100_000_000, 200_000_000])
@@ -25,10 +26,12 @@ def test_summary_uses_nearest_rank_and_whole_round_wall_time():
 
 
 def test_measure_excludes_warmup_and_cycles_fixed_queries(monkeypatch):
+    """Warmup calls are excluded while measured rounds retain fixed query order."""
     calls = []
 
     class FakeBeam:
         def recall(self, query, **kwargs):
+            """Record invocation arguments and return a nonempty synthetic result."""
             calls.append((query, kwargs))
             return [{"id": "synthetic"}]
 
@@ -44,6 +47,7 @@ def test_measure_excludes_warmup_and_cycles_fixed_queries(monkeypatch):
 
 
 def test_empty_recall_refuses_to_publish_timing():
+    """An empty result must fail instead of appearing as fast useful recall."""
     beam = SimpleNamespace(recall=lambda *args, **kwargs: [])
     args = SimpleNamespace(warmup_cycles=1, rounds=1, cycles_per_round=1, top_k=3)
     with pytest.raises(RuntimeError, match="Empty recall"):
@@ -51,6 +55,7 @@ def test_empty_recall_refuses_to_publish_timing():
 
 
 def test_seed_has_fixed_corpus_and_no_ingestion_side_effects():
+    """Independent databases receive identical rows through SQL-only seeding."""
     snapshots = []
     for _ in range(2):
         conn = sqlite3.connect(":memory:")
@@ -80,12 +85,14 @@ def test_seed_has_fixed_corpus_and_no_ingestion_side_effects():
 ])
 @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
 def test_cli_rejects_invalid_counts(option, value):
+    """All workload counts and the timeout reject nonpositive or invalid input."""
     with pytest.raises(SystemExit) as exc:
         bench.parser().parse_args(["--machine", "test", option, value])
     assert exc.value.code == 2
 
 
 def test_real_cli_isolated_linear_report_and_baseline(tmp_path):
+    """Real worker runs preserve user data, exclude secrets and compare reports."""
     ambient = tmp_path / "user-data"
     ambient.mkdir()
     config = ambient / "config.yaml"
@@ -135,6 +142,7 @@ def test_real_cli_isolated_linear_report_and_baseline(tmp_path):
 
 @pytest.fixture
 def report():
+    """Provide a minimal compatible reference report for comparison controls."""
     return {
         "schema_version": 1, "benchmark": "test", "harness_sha256": "hash",
         "environment": {}, "settings": {}, "validation": {}, "workload": {},
@@ -145,6 +153,7 @@ def report():
 
 
 def test_compare_is_advisory_and_allows_revision_time_sample_changes(report):
+    """Compatible revisions report slower, faster and unchanged latency deltas."""
     slower = copy.deepcopy(report)
     slower["summary"]["median_qps"] /= 2
     slower["summary"]["latency_ms"]["p50"] *= 1.5
@@ -170,6 +179,7 @@ def test_compare_is_advisory_and_allows_revision_time_sample_changes(report):
 
 @pytest.mark.parametrize("missing", [False, True])
 def test_compare_rejects_changed_or_missing_metadata(report, missing):
+    """A missing or changed compatibility field prevents performance comparison."""
     for field in ("workload", "environment", "settings", "validation", "sqlite_pragmas",
                   "benchmark", "harness_sha256"):
         changed = copy.deepcopy(report)
@@ -187,7 +197,9 @@ def test_compare_rejects_changed_or_missing_metadata(report, missing):
     subprocess.TimeoutExpired(["git"], 10),
 ])
 def test_revision_falls_back_without_git_or_on_timeout(monkeypatch, error):
+    """Git failures yield explicit unknown metadata without aborting measurement."""
     def fail(*args, **kwargs):
+        """Simulate a Git failure while checking its independent time limit."""
         assert kwargs["timeout"] == 10
         raise error
     monkeypatch.setattr(bench.subprocess, "run", fail)
@@ -195,6 +207,7 @@ def test_revision_falls_back_without_git_or_on_timeout(monkeypatch, error):
 
 
 def test_direct_worker_requires_pinned_settings(monkeypatch):
+    """An unprepared direct worker invocation cannot bypass isolation setup."""
     monkeypatch.delenv("MNEMOSYNE_POLYPHONIC_RECALL", raising=False)
     with pytest.raises(RuntimeError, match="isolate configuration"):
         bench.main(["--worker", "--machine", "test"])
@@ -203,10 +216,12 @@ def test_direct_worker_requires_pinned_settings(monkeypatch):
 @pytest.mark.parametrize("contents", [None, "not json", "[]", "{}",
                                       '{"revision": {}, "summary": null}'])
 def test_baseline_errors_fail_before_worker(tmp_path, monkeypatch, capsys, contents):
+    """Invalid baseline files fail before starting a worker or creating a report."""
     baseline = tmp_path / "baseline.json"
     if contents is not None:
         baseline.write_text(contents, encoding="utf-8")
     def unexpected(*args, **kwargs):
+        """Fail the test if baseline validation accidentally launches a worker."""
         pytest.fail("invalid baseline must not start a worker")
     monkeypatch.setattr(bench.subprocess, "run", unexpected)
     output = tmp_path / "output.json"
@@ -222,6 +237,7 @@ def test_baseline_errors_fail_before_worker(tmp_path, monkeypatch, capsys, conte
 @pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "1"])
 @pytest.mark.parametrize("metric", ["median_qps", "p50", "p95"])
 def test_baseline_rejects_invalid_divisors(tmp_path, report, value, metric):
+    """Comparison divisors must be finite positive numbers, excluding booleans."""
     summary = report["summary"] if metric == "median_qps" else report["summary"]["latency_ms"]
     summary[metric] = value
     path = tmp_path / "baseline.json"
@@ -232,7 +248,9 @@ def test_baseline_rejects_invalid_divisors(tmp_path, report, value, metric):
 
 @pytest.mark.parametrize("timed_out", [False, True])
 def test_worker_failure_publishes_no_report(tmp_path, monkeypatch, capsys, timed_out):
+    """Worker errors and timeouts preserve stderr without publishing timing JSON."""
     def fail(command, **kwargs):
+        """Simulate worker exit or timeout and verify the configured deadline."""
         assert kwargs["timeout"] == 7
         if timed_out:
             raise subprocess.TimeoutExpired(command, 7)

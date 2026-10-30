@@ -36,6 +36,7 @@ RECALL_KWARGS = {"temporal_weight": 0.0, "_cross_session": False}
 
 
 def positive_int(value: str) -> int:
+    """Parse a count or timeout, rejecting values that cannot produce a run."""
     number = int(value)
     if number <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
@@ -43,6 +44,7 @@ def positive_int(value: str) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
+    """Build the controller CLI and its internal worker-mode arguments."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--machine", required=True, help="Stable local machine label (no secrets)")
     ap.add_argument("--rows-per-tier", type=positive_int, default=1000)
@@ -77,6 +79,7 @@ def summarize(rounds: list[list[int]], elapsed_ns: list[int]) -> dict:
 
 
 def environment(machine: str) -> dict:
+    """Record comparison metadata without copying environment variables or keys."""
     packages = {}
     for name in ("numpy", "sqlite-vec", "PyYAML"):
         try:
@@ -97,7 +100,9 @@ def environment(machine: str) -> dict:
 
 
 def revision() -> dict:
+    """Read the checkout revision and dirty status, tolerating unavailable Git."""
     def git(*args):
+        """Run a bounded metadata-only Git command in the source checkout."""
         result = subprocess.run(
             ["git", "-C", str(ROOT), *args], capture_output=True, text=True,
             encoding="utf-8", errors="replace", check=True, timeout=10,
@@ -128,7 +133,9 @@ def seed(beam, rows: int) -> None:
 
 
 def measure(beam, args) -> tuple[list[list[int]], list[list[int]], list[int]]:
+    """Warm recall, then collect per-call samples and whole-round wall times."""
     def cycle(timings, counts):
+        """Recall each fixed query once and reject empty-result measurements."""
         for query in QUERIES:
             start = time.perf_counter_ns()
             results = beam.recall(query, top_k=args.top_k, **RECALL_KWARGS)
@@ -153,6 +160,7 @@ def measure(beam, args) -> tuple[list[list[int]], list[list[int]], list[int]]:
 
 
 def worker(args) -> dict:
+    """Measure an isolated temporary corpus and return its auditable JSON report."""
     # Imports happen only after the controller has set a clean environment.
     if any(os.environ.get(key) != value for key, value in SETTINGS.items()):
         raise RuntimeError("Run the controller without --worker to isolate configuration")
@@ -208,6 +216,7 @@ def worker(args) -> dict:
 
 
 def compare(report: dict, baseline: dict) -> dict:
+    """Compute advisory deltas only when workload and environment metadata match."""
     # Commit/time intentionally differ. Host load/power state still need human control.
     keys = (
         "schema_version", "benchmark", "harness_sha256", "environment", "settings", "workload",
@@ -244,6 +253,7 @@ def load_baseline(path: Path) -> dict:
 
 
 def main(argv=None) -> int:
+    """Run the bounded worker and publish a report only after successful execution."""
     ap = parser()
     args = ap.parse_args(argv)
     if args.worker:
