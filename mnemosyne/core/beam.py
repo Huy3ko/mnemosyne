@@ -11036,7 +11036,7 @@ class BeamMemory:
     # so entries cached under an older digest are not reused. Part of the
     # hashed payload; the opaque key keeps the "v2:" prefix because QueryCache's
     # opaque-path recognition (_OPAQUE_V2_KEY_RE) keys off that prefix.
-    _ENHANCED_RECALL_CACHE_VERSION = 10
+    _ENHANCED_RECALL_CACHE_VERSION = 11
     # NOTE: the key carries the env MNEMOSYNE_VEC_TYPE, not the table's
     # live DDL type — a reindex under a different type without a version
     # bump serves stale admission/ranking. Reindex flows must bump.
@@ -11692,9 +11692,7 @@ class BeamMemory:
         query_embedding = None
         if _embeddings.available():
             try:
-                vecs = _embeddings.embed([query])
-                if vecs is not None and len(vecs) > 0:
-                    query_embedding = vecs[0]
+                query_embedding = _embeddings.embed_query(query)
             except Exception:
                 query_embedding = None
 
