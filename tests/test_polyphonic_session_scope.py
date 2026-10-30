@@ -28,7 +28,8 @@ Grid: cut site x visibility mode.
   channel and the same author on another channel;
   a channel recall whose noise is the caller's own session on another channel;
   a veracity or memory_type filter, where target and noise are both the
-  caller's own and only the filter tells them apart (#1278). The post-filter
+  caller's own and only the filter tells them apart (#1278), including NULL
+  noise and both filters at once with noise that matches only one. The post-filter
   compares these with plain equality, and both tiers always have the columns,
   so the pushed-down ``=`` keeps exactly the rows the post-filter keeps.
 """
@@ -106,6 +107,16 @@ MODES = {
                  {"veracity": "stated"}, False),
     "memory_type": ("caller", {"memory_type": "artifact"}, "caller", {"memory_type": "episode"},
                     {"memory_type": "artifact"}, False),
+    "veracity-null-noise": ("caller", {"veracity": "stated"}, "caller", {"veracity": None},
+                            {"veracity": "stated"}, False),
+    "both-filters-noise-matches-veracity": (
+        "caller", {"veracity": "stated", "memory_type": "artifact"},
+        "caller", {"veracity": "stated", "memory_type": "episode"},
+        {"veracity": "stated", "memory_type": "artifact"}, False),
+    "both-filters-noise-matches-type": (
+        "caller", {"veracity": "stated", "memory_type": "artifact"},
+        "caller", {"veracity": "inferred", "memory_type": "artifact"},
+        {"veracity": "stated", "memory_type": "artifact"}, False),
 }
 
 
