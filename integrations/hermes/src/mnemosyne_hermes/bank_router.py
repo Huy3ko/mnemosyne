@@ -7,14 +7,21 @@ Gespraechsinhalt.
 
 Regeln (fail-closed):
 
-1. Ein Eintrag in `banks_map.json` entscheidet: laengster Praefix des
-   Session-Keys gewinnt.
-2. Kein Key vorhanden (CLI, Cron, interner Lauf ohne Chat) -> `_default`.
-3. Key vorhanden, aber unbekannt (fremder Chat, Gruppe) -> `_unknown`
+1. **Routing ist ein Schalter, kein Default.** Ohne Eintraege in
+   `banks_map.json` ist die Funktion aus: es wird nichts umgebunden, keine Bank
+   angelegt. Ein nie eingeschaltetes Feature darf keine Quarantaene erzeugen
+   (Review P1-2).
+2. Ein Eintrag in `banks_map.json` entscheidet: der laengste Praefix des
+   Session-Keys gewinnt — **auf Komponentengrenze**. `…:dm:111` bindet
+   `…:dm:1112` nicht (Review P1-5).
+3. Kein Key vorhanden (CLI, Cron, interner Lauf ohne Chat) -> `_default`.
+4. Key vorhanden, aber unbekannt (fremder Chat, Gruppe) -> `_unknown`
    (Default `quarantine`). Eine unbekannte Zuordnung darf niemals eine private
    Bank oeffnen.
-4. Ist die Bank nicht lesbar/oeffenbar, wirft der Aufrufer — er faellt **nicht**
+5. Ist die Bank nicht lesbar/oeffenbar, wirft der Aufrufer — er faellt **nicht**
    auf die private Bank zurueck.
+6. Banknamen sind eine Konfigurationsgrenze: ein Name mit Pfadtrennern oder
+   `..` verlaesst das Banken-Verzeichnis nicht (Review P2).
 
 Die Zuordnung ist damit Daten, nicht Code: eine neue Person ist ein Eintrag,
 keine Aenderung am Adapter.
@@ -31,6 +38,7 @@ MAP_FILENAME = "banks_map.json"
 _ENV_MAP = "MNEMOSYNE_BANKS_MAP"
 _lock = threading.Lock()
 _cache: dict[str, tuple[float, dict]] = {}
+_meta_cache: dict[str, tuple[float, dict]] = {}
 
 
 def data_dir(hermes_home: Optional[str] = None) -> Path:
@@ -50,8 +58,8 @@ def map_path(hermes_home: Optional[str] = None) -> Path:
     return data_dir(hermes_home) / MAP_FILENAME
 
 
-def load_map(hermes_home: Optional[str] = None) -> dict:
-    """Zuordnung laden (mit mtime-Cache; Datei darf zur Laufzeit geaendert werden)."""
+def _read_map(hermes_home: Optional[str] = None) -> dict:
+    """Raw map of the given home (cached by path+mtime), or ``{}``."""
     path = map_path(hermes_home)
     try:
         mtime = path.stat().st_mtime
@@ -59,7 +67,7 @@ def load_map(hermes_home: Optional[str] = None) -> dict:
         return {}
     key = str(path)
     with _lock:
-        hit = _cache.get(key)
+        hit = _meta_cache.get(key)
         if hit and hit[0] == mtime:
             return hit[1]
     try:
@@ -68,21 +76,42 @@ def load_map(hermes_home: Optional[str] = None) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    entries = {str(k): str(v) for k, v in data.items() if not str(k).startswith("_")}
     with _lock:
-        _cache[key] = (mtime, entries)
+        _meta_cache[key] = (mtime, data)
+    return data
+
+
+def load_map(hermes_home: Optional[str] = None) -> dict:
+    """Zuordnung laden (mit mtime-Cache; Datei darf zur Laufzeit geaendert werden)."""
+    raw = _read_map(hermes_home)
+    entries = {str(k): str(v) for k, v in raw.items() if not str(k).startswith("_")}
+    with _lock:
+        _cache[str(map_path(hermes_home))] = (0.0, entries)
     return entries
 
 
-def _meta(key: str, field: str, fallback: str) -> str:
-    """Metafelder (`_default`, `_unknown`) aus derselben Datei lesen."""
-    path = map_path()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return fallback
-    value = raw.get(field) if isinstance(raw, dict) else None
-    return str(value) if value else fallback
+def routing_enabled(hermes_home: Optional[str] = None) -> bool:
+    """Routing is on only when the map actually maps somebody.
+
+    A missing file, an empty file, or a file with nothing but ``_default``/
+    ``_unknown`` leaves the provider exactly as it is. Otherwise a deployment
+    that never switched the feature on would silently start writing into a
+    fresh quarantine database (review P1-2).
+    """
+    return bool(load_map(hermes_home))
+
+
+def _meta(hermes_home: Optional[str] = None) -> dict:
+    """Metafelder (`_default`, `_unknown`) aus **derselben** Datei wie die Map.
+
+    Der Pfad muss aus dem aufrufenden Home kommen; sonst liest ein fremdes
+    Profil die Vorgaben des Standard-Homes (review P2).
+    """
+    raw = _read_map(hermes_home)
+    return {
+        "_default": str(raw.get("_default") or "quarantine"),
+        "_unknown": str(raw.get("_unknown") or "quarantine"),
+    }
 
 
 def is_chat_identity(key: str) -> bool:
@@ -101,30 +130,62 @@ def is_chat_identity(key: str) -> bool:
     return parts[3] in {"dm", "group", "channel", "thread"}
 
 
+def _is_component_prefix(key: str, pattern: str) -> bool:
+    """Prefix match that stops at a ``:`` component boundary.
+
+    ``dm:111`` must not select ``dm:1112``. A pattern that ends with ``:``
+    (``…:group:``) is already a component prefix and matches as-is.
+    """
+    if not pattern or not key.startswith(pattern):
+        return False
+    if len(key) == len(pattern):
+        return True
+    return pattern.endswith(":") or key[len(pattern)] == ":"
+
+
 def resolve_bank(session_key: str, hermes_home: Optional[str] = None) -> tuple[str, str]:
-    """(bank, grund) fuer diesen Turn. Wirft nie; liefert immer eine Bank."""
+    """(bank, grund) fuer diesen Turn. Wirft nie; ``""`` heisst: nicht routen."""
     key = str(session_key or "").strip()
     entries = load_map(hermes_home)
+    if not entries:
+        return "", "disabled:no-map"
+
+    meta = _meta(hermes_home)
 
     if not key:
-        bank = _meta(key, "_default", "quarantine")
-        return bank, "default:kein-session-key"
+        return meta["_default"], "default:kein-session-key"
 
     if not is_chat_identity(key):
-        bank = _meta(key, "_default", "quarantine")
-        return bank, "default:kein-chat-kontext"
+        return meta["_default"], "default:kein-chat-kontext"
 
     best = ""
     best_bank = ""
     for pattern, bank in entries.items():
-        if key.startswith(pattern) and len(pattern) > len(best):
+        if _is_component_prefix(key, pattern) and len(pattern) > len(best):
             best, best_bank = pattern, bank
     if best:
         return best_bank, f"map:{best}"
 
-    bank = _meta(key, "_unknown", "quarantine")
-    return bank, "unknown:fail-closed"
+    return meta["_unknown"], "unknown:fail-closed"
 
 
 def bank_db_path(bank: str, hermes_home: Optional[str] = None) -> Path:
-    return data_dir(hermes_home) / "banks" / bank / "mnemosyne.db"
+    """Datenbankdatei einer Bank — nur innerhalb von ``<data>/banks``."""
+    name = str(bank or "").strip()
+    if not name or name in {".", ".."} or any(sep in name for sep in ("/", "\\", "\x00")):
+        raise ValueError(f"invalid bank name: {bank!r}")
+    root = data_dir(hermes_home) / "banks"
+    path = root / name / "mnemosyne.db"
+    resolved_root = root.resolve()
+    if resolved_root not in path.resolve().parents:
+        raise ValueError(f"bank name escapes the banks root: {bank!r}")
+    return path
+
+
+def cache_key(bank: str, hermes_home: Optional[str] = None) -> str:
+    """Cache-Schluessel einer Bank: die **Speicher-Identitaet**, nicht der Name.
+
+    Zwei Homes mit gleichnamiger Bank sind zwei Datenbanken; ein Cache nach
+    Banknamen liefert dem zweiten Home die Instanz des ersten (review P1-4).
+    """
+    return str(bank_db_path(bank, hermes_home).resolve())
