@@ -103,14 +103,17 @@ def test_via_api_flag_switches_backend(monkeypatch, calls):
 
 
 @pytest.mark.parametrize(
-    "flip_env, flip_value",
+    "flip_env, flip_value, restore_inside_load",
     [
-        ("MNEMOSYNE_EMBEDDING_API_URL", URL_A),
-        ("MNEMOSYNE_NO_EMBEDDINGS", "1"),
+        ("MNEMOSYNE_EMBEDDING_API_URL", URL_A, False),
+        ("MNEMOSYNE_NO_EMBEDDINGS", "1", False),
+        ("MNEMOSYNE_NO_EMBEDDINGS", "1", True),
     ],
-    ids=["switch-to-api", "opt-out"],
+    ids=["switch-to-api", "opt-out", "opt-out-undone-before-load-returns"],
 )
-def test_config_change_during_local_load_is_not_cached(monkeypatch, calls, flip_env, flip_value):
+def test_config_change_during_local_load_is_not_cached(
+    monkeypatch, calls, flip_env, flip_value, restore_inside_load
+):
     """embed_query picks the local key, then the config changes before the model loads.
 
     The loader then answers for the new config ("api" sentinel, or None when opted out),
@@ -121,14 +124,33 @@ def test_config_change_during_local_load_is_not_cached(monkeypatch, calls, flip_
 
     def flip_then_load():
         monkeypatch.setenv(flip_env, flip_value)
-        return REAL_GET_MODEL()
+        model = REAL_GET_MODEL()
+        if restore_inside_load:
+            monkeypatch.delenv(flip_env)
+        return model
 
     monkeypatch.setattr(embeddings, "_get_model", flip_then_load)
     assert embeddings.embed_query("same query") is None
 
-    monkeypatch.delenv(flip_env)
+    monkeypatch.delenv(flip_env, raising=False)
     monkeypatch.setattr(embeddings, "_get_model", fake_local)
     vec = embeddings.embed_query("same query")
 
     assert vec is not None and vec[0] == -1.0
     assert calls == [("local", None)]
+
+
+def test_missing_fastembed_none_is_cached(monkeypatch, calls):
+    """Without fastembed the loader's None can't change at runtime, so it stays cached."""
+    monkeypatch.setattr(embeddings, "TextEmbedding", None)
+    loads = []
+
+    def counting_load():
+        loads.append(1)
+        return REAL_GET_MODEL()
+
+    monkeypatch.setattr(embeddings, "_get_model", counting_load)
+
+    assert embeddings.embed_query("same query") is None
+    assert embeddings.embed_query("same query") is None
+    assert len(loads) == 1

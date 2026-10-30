@@ -916,8 +916,11 @@ def _embed_query_cached(
     model = _get_model()
     # The key was chosen for the local backend, but the loader answers for the config as
     # it is now. If that moved to the API or to opt-out in between, this call has no local
-    # vector, and caching None would keep serving it after the config moves back.
-    if model == "api" or (model is None and _is_disabled()):
+    # vector, and caching None would keep serving it after the config moves back. The
+    # loader's only other None is a missing fastembed install, which can't change at
+    # runtime, so that is the one None worth caching. Asking _is_disabled() again here
+    # would race the same way.
+    if model == "api" or (model is None and _is_fastembed_available()):
         raise _ConfigChangedDuringQuery
     if model is None:
         return None
