@@ -12,6 +12,7 @@ from mnemosyne.core import embeddings
 
 URL_A = "http://127.0.0.1:11435/v1"
 URL_B = "http://127.0.0.1:11436/v1"
+REAL_GET_MODEL = embeddings._get_model
 
 
 class FakeModel:
@@ -99,3 +100,35 @@ def test_via_api_flag_switches_backend(monkeypatch, calls):
 
     assert [kind for kind, _ in calls] == ["local", "api"]
     assert vec[0] == 1.0
+
+
+@pytest.mark.parametrize(
+    "flip_env, flip_value",
+    [
+        ("MNEMOSYNE_EMBEDDING_API_URL", URL_A),
+        ("MNEMOSYNE_NO_EMBEDDINGS", "1"),
+    ],
+    ids=["switch-to-api", "opt-out"],
+)
+def test_config_change_during_local_load_is_not_cached(monkeypatch, calls, flip_env, flip_value):
+    """embed_query picks the local key, then the config changes before the model loads.
+
+    The loader then answers for the new config ("api" sentinel, or None when opted out),
+    so this call has no local vector. That miss must not be cached under the local key,
+    or the query keeps getting None after the config changes back.
+    """
+    fake_local = embeddings._get_model
+
+    def flip_then_load():
+        monkeypatch.setenv(flip_env, flip_value)
+        return REAL_GET_MODEL()
+
+    monkeypatch.setattr(embeddings, "_get_model", flip_then_load)
+    assert embeddings.embed_query("same query") is None
+
+    monkeypatch.delenv(flip_env)
+    monkeypatch.setattr(embeddings, "_get_model", fake_local)
+    vec = embeddings.embed_query("same query")
+
+    assert vec is not None and vec[0] == -1.0
+    assert calls == [("local", None)]

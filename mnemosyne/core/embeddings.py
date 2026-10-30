@@ -894,7 +894,14 @@ def embed_query(text: str) -> Optional[np.ndarray]:
     # The backend is part of the key too: embeddings_via_api or the API URL can change at runtime,
     # and a cached local vector must not be compared against API document vectors.
     api_url = _effective_base_url() if _is_api_model(_DEFAULT_MODEL) else None
-    return _embed_query_cached(_get_prefix("query") + text, _embedding_caps(), api_url)
+    try:
+        return _embed_query_cached(_get_prefix("query") + text, _embedding_caps(), api_url)
+    except _ConfigChangedDuringQuery:
+        return None
+
+
+class _ConfigChangedDuringQuery(Exception):
+    """Raised inside the cached function so lru_cache stores nothing for this call."""
 
 
 @lru_cache(maxsize=512)
@@ -907,7 +914,12 @@ def _embed_query_cached(
         return result[0]
 
     model = _get_model()
-    if model is None or model == "api":
+    # The key was chosen for the local backend, but the loader answers for the config as
+    # it is now. If that moved to the API or to opt-out in between, this call has no local
+    # vector, and caching None would keep serving it after the config moves back.
+    if model == "api" or (model is None and _is_disabled()):
+        raise _ConfigChangedDuringQuery
+    if model is None:
         return None
     vectors = list(model.embed([prefixed]))
     if not vectors:
