@@ -25,6 +25,8 @@ Grid: cut site x visibility mode.
   session by that author must not be filtered out, nor starved by other authors;
   a channel recall whose noise is the caller's own session on another channel.
 """
+import sqlite3
+
 import numpy as np
 import pytest
 
@@ -180,11 +182,11 @@ def test_fused_cut_keeps_id_in_scope_in_either_tier(env):
     assert [(r["id"], r["tier"]) for r in results] == [(target_id, "episodic")]
 
 
+@pytest.mark.skipif(not hasattr(sqlite3.Connection, "setlimit"),
+                    reason="sqlite3.Connection.setlimit needs Python 3.11+")
 def test_fused_cut_prune_stays_under_sqlite_variable_limit(env):
     # Older SQLite builds allow 999 bound variables; a graph voice can name
     # more ids than that, and the prune must neither fail nor be skipped.
-    import sqlite3
-
     caller, other, monkeypatch = env
     monkeypatch.setenv("MNEMOSYNE_VOICE_GRAPH", "1")
     target_id = caller.remember("target recent quokka", source="user", dedupe=False)
