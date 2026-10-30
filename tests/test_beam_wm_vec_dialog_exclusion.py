@@ -533,17 +533,26 @@ def test_polyphonic_topic_filter_exact_equality(temp_db, monkeypatch):
     beam.conn.commit()
 
     class _FakeEngine:
+        calls = 0
+
         def recall(self, *, query, query_embedding, top_k,
-                   default_dense_source_filter=True, source=None, topic=None):
+                   default_dense_source_filter=True, source=None, topic=None,
+                   episodic_where=None, episodic_params=(),
+                   scope_where=None, scope_params=()):
+            self.calls += 1
             return [PolyphonicResult(
                 memory_id="arch-1", combined_score=0.9,
                 voice_scores={"vector": 0.9}, metadata={},
             )]
 
-    monkeypatch.setattr(beam, "_get_polyphonic_engine", lambda: _FakeEngine())
+    engine = _FakeEngine()
+    monkeypatch.setattr(beam, "_get_polyphonic_engine", lambda: engine)
 
     results = beam.recall(QUERY, top_k=10, topic="conversation")
     ids = [r["id"] for r in results]
+    # A fake that rejects the engine's keywords makes recall return [], which
+    # would pass the check below without running the topic filter.
+    assert engine.calls == 1
     assert "arch-1" not in ids, (
         "topic='conversation' must match source exactly; a row with source "
         "'conversation_archive' must be excluded (pre-fix substring match "
