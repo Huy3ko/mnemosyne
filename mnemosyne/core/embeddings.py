@@ -739,11 +739,11 @@ def _ensure_api_vectors(result: Optional[np.ndarray], base_url: str, expected: i
     return result
 
 
-def _embed_api(texts: List[str]) -> Optional[np.ndarray]:
+def _embed_api(texts: List[str], base_url: Optional[str] = None) -> Optional[np.ndarray]:
     """Embed texts via OpenAI-compatible API (OpenRouter or custom endpoint)."""
     global _API_CALL_COUNT
     # Require API key for OpenRouter; custom endpoints may not need one.
-    base_url = _effective_base_url()
+    base_url = base_url or _effective_base_url()
     is_custom = not _is_openrouter_url(base_url)
     if not is_custom and not _OPENAI_API_KEY:
         logger.warning(
@@ -902,7 +902,7 @@ def _embed_query_cached(
     prefixed: str, _caps: tuple = (0, 0), api_url: Optional[str] = None
 ) -> Optional[np.ndarray]:
     if api_url is not None:
-        result = _embed_api([prefixed])
+        result = _embed_api([prefixed], api_url)
         _ensure_api_vectors(result, api_url, 1)
         return result[0]
 

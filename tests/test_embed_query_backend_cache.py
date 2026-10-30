@@ -24,7 +24,11 @@ class FakeModel:
 
 
 @pytest.fixture
-def calls(monkeypatch):
+def calls(monkeypatch, tmp_path):
+    # Config wins over env, and the default model is read at import: pin both so a
+    # developer's config.yaml or MNEMOSYNE_EMBEDDING_MODEL can't pick the backend.
+    monkeypatch.setenv("MNEMOSYNE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(embeddings, "_DEFAULT_MODEL", "BAAI/bge-small-en-v1.5")
     for name in (
         "MNEMOSYNE_NO_EMBEDDINGS",
         "MNEMOSYNE_SKIP_EMBEDDINGS",
@@ -42,8 +46,8 @@ def calls(monkeypatch):
     log = []
 
     # Faked above the transport so the https (OpenRouter) case never reaches the network.
-    def fake_embed_api(texts):
-        log.append(("api", embeddings._effective_base_url()))
+    def fake_embed_api(texts, base_url=None):
+        log.append(("api", base_url))
         return np.ones((len(texts), 1), dtype=np.float32)
 
     monkeypatch.setattr(embeddings, "_embed_api", fake_embed_api)
