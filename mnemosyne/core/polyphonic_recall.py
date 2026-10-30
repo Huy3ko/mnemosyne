@@ -1069,8 +1069,9 @@ class PolyphonicRecallEngine:
 
         Graph and fact hits come from stores with no session column, so they
         are checked here against the memory rows they name. An id stays when
-        any tier holding it is in scope; ids with no memory row (consolidated
-        facts, gists) are left for BeamMemory to resolve.
+        any tier holding it is in scope. Ids with no memory row in either tier
+        (consolidated facts, gists) are removed too: BeamMemory can only
+        resolve memory rows, so they would hold a slot and then be discarded.
         """
         if not results:
             return
@@ -1105,7 +1106,7 @@ class PolyphonicRecallEngine:
                     ).fetchall()
                     for row in rows:
                         (in_scope if row["visible"] else out_of_scope).add(row["id"])
-            for memory_id in out_of_scope - in_scope:
+            for memory_id in set(results) - in_scope:
                 del results[memory_id]
         finally:
             if own_conn:

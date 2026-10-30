@@ -163,8 +163,9 @@ def test_fused_cut_keeps_id_in_scope_in_either_tier(env):
     target_id, noise_ids = _seed(caller, other, "own-session", target_first=False)
     _set(caller, target_id, session_id=OTHER)
     caller.conn.execute(
-        "INSERT INTO episodic_memory (id, content, source, timestamp, importance, session_id) "
-        "VALUES (?, 'target recent quokka summary', 'user', datetime('now'), 0.5, ?)",
+        # scope defaults to 'global' in the table; this row must be session-scoped.
+        "INSERT INTO episodic_memory (id, content, source, timestamp, importance, session_id, scope) "
+        "VALUES (?, 'target recent quokka summary', 'user', datetime('now'), 0.5, ?, 'session')",
         (target_id, CALLER),
     )
     caller.conn.commit()
@@ -200,6 +201,22 @@ def test_fused_cut_prune_stays_under_sqlite_variable_limit(env):
 
     def graph_voice(self, query):
         return [RecallResult(memory_id=mid, score=1.0 - i / 10000, voice="graph", metadata={})
+                for i, mid in enumerate(ranked)]
+
+    monkeypatch.setattr(PolyphonicRecallEngine, "_graph_voice", graph_voice)
+    assert [r["id"] for r in caller.recall("quokka", top_k=1)] == [target_id]
+
+
+def test_fused_cut_drops_ids_with_no_memory_row(env):
+    # Graph and fact hits can name gists or facts with no memory row. BeamMemory
+    # discards them, so they must not hold fused slots above a real memory.
+    caller, other, monkeypatch = env
+    monkeypatch.setenv("MNEMOSYNE_VOICE_GRAPH", "1")
+    target_id = caller.remember("target recent quokka", source="user", dedupe=False)
+    ranked = [*(f"gist-{i}" for i in range(NOISE)), target_id]
+
+    def graph_voice(self, query):
+        return [RecallResult(memory_id=mid, score=1.0 - i / 100, voice="graph", metadata={})
                 for i, mid in enumerate(ranked)]
 
     monkeypatch.setattr(PolyphonicRecallEngine, "_graph_voice", graph_voice)
