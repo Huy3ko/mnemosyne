@@ -331,8 +331,9 @@ class EpisodicGraph:
         pronoun_pattern = r"\b(I|you|we|they|he|she|it|me|us|them|him|her)\b"
         pronouns = re.findall(pronoun_pattern, content, re.IGNORECASE)
         
-        # Combine and deduplicate
-        participants = list(set(names + pronouns))
+        # Combine and deduplicate in text order: a set would let the string hash seed
+        # pick which names survive the cap.
+        participants = list(dict.fromkeys(names + pronouns))
         return participants[:5]  # Cap at 5
     
     def _extract_temporal_scope(self, content: str) -> Optional[str]:
@@ -577,7 +578,9 @@ class EpisodicGraph:
         seen = {memory_id}
 
         for hop in range(1, depth + 1):
-            next_level = set()
+            # A list, not a set (`seen` already dedupes): the next hop is expanded in
+            # discovery order, so results don't depend on string hashing.
+            next_level = []
             for mem in current_level:
                 cursor = self.conn.cursor()
                 if edge_type:
@@ -596,7 +599,7 @@ class EpisodicGraph:
                 for row in rows:
                     neighbor = row["target"] if row["source"] == mem else row["source"]
                     if neighbor not in seen:
-                        next_level.add(neighbor)
+                        next_level.append(neighbor)
                         seen.add(neighbor)
                         results.append({
                             "memory_id": neighbor,
