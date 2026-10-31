@@ -55,6 +55,8 @@ _IMPORTING = True
 # warns at most once (reset on a later success).
 _DENSE_STACK_IMPORTED = np is not None and TextEmbedding is not None
 _DENSE_STACK_WARNED = False
+_DENSE_STACK_RETRY_AT = 0.0
+_DENSE_STACK_BROKEN_BACKOFF = 1.0
 # Guards concurrent first-time imports so two threads cannot both attempt the
 # import (and both emit the warning) when the stack is absent.
 _DENSE_STACK_LOCK = threading.Lock()
@@ -67,9 +69,11 @@ def _ensure_fastembed() -> bool:
     Returns True on success (and remembers it so later calls skip re-importing)
     and False on failure. On failure logs exactly one WARNING naming the failing
     module ('numpy' or 'fastembed') and the reason; repeated failures do not
-    re-warn. A later success resets the warned flag. Thread-safe.
+    re-warn. Broken installed packages back off briefly; missing modules remain
+    immediately retryable. A later success resets warning and backoff. Thread-safe.
     """
     global np, TextEmbedding, _DENSE_STACK_IMPORTED, _DENSE_STACK_WARNED
+    global _DENSE_STACK_RETRY_AT
     if _DENSE_STACK_IMPORTED and np is not None and TextEmbedding is not None:
         return True
     if _DENSE_STACK_IMPORTED and (np is None or TextEmbedding is None):
@@ -80,10 +84,16 @@ def _ensure_fastembed() -> bool:
         if np is not None and TextEmbedding is not None:
             _DENSE_STACK_IMPORTED = True
             return True
+        if time.monotonic() < _DENSE_STACK_RETRY_AT:
+            return False
 
         try:
             import numpy as _np
         except Exception as exc:  # noqa: BLE001
+            # Defer cooldown along with the warning during alias evaluation,
+            # so the first runtime call can report the broken dependency.
+            if not _IMPORTING and not isinstance(exc, ModuleNotFoundError):
+                _DENSE_STACK_RETRY_AT = time.monotonic() + _DENSE_STACK_BROKEN_BACKOFF
             if not _DENSE_STACK_WARNED and not _IMPORTING:
                 logger.warning("could not import numpy: %s", exc)
                 _DENSE_STACK_WARNED = True
@@ -91,6 +101,10 @@ def _ensure_fastembed() -> bool:
         try:
             from fastembed import TextEmbedding as _TE
         except Exception as exc:  # noqa: BLE001
+            # Defer cooldown along with the warning during alias evaluation,
+            # so the first runtime call can report the broken dependency.
+            if not _IMPORTING and not isinstance(exc, ModuleNotFoundError):
+                _DENSE_STACK_RETRY_AT = time.monotonic() + _DENSE_STACK_BROKEN_BACKOFF
             if not _DENSE_STACK_WARNED and not _IMPORTING:
                 logger.warning("could not import fastembed: %s", exc)
                 _DENSE_STACK_WARNED = True
@@ -100,6 +114,7 @@ def _ensure_fastembed() -> bool:
         TextEmbedding = _TE
         _DENSE_STACK_IMPORTED = True
         _DENSE_STACK_WARNED = False
+        _DENSE_STACK_RETRY_AT = 0.0
         # First successful bind: drop any cached failure from embed_query().
         # _embed_query_cached memoises its result, so a query that ran before
         # the stack was importable holds a cached None and would keep returning
