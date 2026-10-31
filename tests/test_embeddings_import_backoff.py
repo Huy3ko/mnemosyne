@@ -105,8 +105,12 @@ def test_failure_names_module_and_recovery_restores_warning_budget(
     assert f"could not import {module}:" in caplog.records[1].getMessage()
 
 
-def test_concurrent_available_warns_once(dense_imports, monkeypatch, caplog):
-    """Simultaneous callers share one broken import attempt and warning."""
+@pytest.mark.parametrize("error_type, expected_attempts", [(RuntimeError, 1), (ModuleNotFoundError, 8)])
+def test_concurrent_available_warns_once(
+    dense_imports, monkeypatch, caplog, error_type, expected_attempts,
+):
+    """Both retry policies emit one warning to simultaneous callers."""
+    dense_imports.error = error_type("unavailable dependency")
     monkeypatch.setattr(embeddings, "_is_disabled", lambda: False)
     monkeypatch.setattr(embeddings, "_is_api_model", lambda _: False)
     caplog.set_level(logging.WARNING, logger=embeddings.__name__)
@@ -118,7 +122,7 @@ def test_concurrent_available_warns_once(dense_imports, monkeypatch, caplog):
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         assert list(pool.map(lambda _: check_available(), range(8))) == [False] * 8
-    assert dense_imports.attempts == ["numpy"]
+    assert dense_imports.attempts == ["numpy"] * expected_attempts
     assert len(caplog.records) == 1
 
 
