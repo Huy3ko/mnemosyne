@@ -31,6 +31,8 @@ import sys
 import types
 from functools import lru_cache
 
+import pytest
+
 from mnemosyne.core import embeddings
 
 _DENSE_MODULES = ("numpy", "fastembed")
@@ -57,6 +59,17 @@ def _isolate_config(monkeypatch, tmp_path):
     for key in _ISOLATED_ENV:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(embeddings, "_FASTEMBED_CACHE_DIR", str(tmp_path / "cache"))
+
+
+@pytest.fixture
+def isolated_embeddings(monkeypatch, tmp_path):
+    """Undo every test patch before rebuilding the shared module globals."""
+    try:
+        with monkeypatch.context() as patch:
+            _isolate_config(patch, tmp_path)
+            yield patch
+    finally:
+        importlib.reload(embeddings)
 
 
 def _site_package_entries():
@@ -121,8 +134,8 @@ def _restore_stub_dense_stack(previous):
             sys.modules[name] = module
 
 
-def test_available_self_heals_after_dense_stack_returns(monkeypatch, tmp_path):
-    _isolate_config(monkeypatch, tmp_path)
+def test_available_self_heals_after_dense_stack_returns(isolated_embeddings, tmp_path):
+    monkeypatch = isolated_embeddings
 
     query = "mnemosyne lazy import cache probe"
     original_path = list(sys.path)
@@ -170,17 +183,16 @@ def test_available_self_heals_after_dense_stack_returns(monkeypatch, tmp_path):
         sys.path[:] = original_path
         if previous_modules is not None:
             _restore_stub_dense_stack(previous_modules)
-        importlib.reload(embeddings)
 
 
-def test_recovery_clears_a_preexisting_cached_failure(monkeypatch, tmp_path):
+def test_recovery_clears_a_preexisting_cached_failure(isolated_embeddings, tmp_path):
     """Defence in depth: an entry cached by an older revision is dropped.
 
     embed_query() no longer caches failures, but a process upgraded in place can
     already hold one. ``_ensure_fastembed()`` must clear the cache when the stack
     first binds.
     """
-    _isolate_config(monkeypatch, tmp_path)
+    monkeypatch = isolated_embeddings
 
     calls = {"n": 0}
 
@@ -207,12 +219,9 @@ def test_recovery_clears_a_preexisting_cached_failure(monkeypatch, tmp_path):
     finally:
         if previous_modules is not None:
             _restore_stub_dense_stack(previous_modules)
-        importlib.reload(embeddings)
 
 
-def test_import_failure_warns_exactly_once(monkeypatch, caplog, tmp_path):
-    _isolate_config(monkeypatch, tmp_path)
-
+def test_import_failure_warns_exactly_once(isolated_embeddings, caplog, tmp_path):
     original_path = list(sys.path)
     original_import = builtins.__import__
     try:
@@ -234,13 +243,10 @@ def test_import_failure_warns_exactly_once(monkeypatch, caplog, tmp_path):
     msg = records[0].getMessage()
     assert "numpy" in msg or "fastembed" in msg, msg
 
-    # Leave the module in a clean, bound state for sibling tests.
-    importlib.reload(embeddings)
 
-
-def test_embed_query_recovers_without_calling_available(monkeypatch, tmp_path):
+def test_embed_query_recovers_without_calling_available(isolated_embeddings, tmp_path):
     """A direct caller never touches available(); embed_query() must retry anyway."""
-    _isolate_config(monkeypatch, tmp_path)
+    monkeypatch = isolated_embeddings
 
     query = "mnemosyne direct embed_query recovery probe"
     original_path = list(sys.path)
@@ -266,4 +272,3 @@ def test_embed_query_recovers_without_calling_available(monkeypatch, tmp_path):
         sys.path[:] = original_path
         if previous_modules is not None:
             _restore_stub_dense_stack(previous_modules)
-        importlib.reload(embeddings)
