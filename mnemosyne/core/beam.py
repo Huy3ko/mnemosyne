@@ -11041,7 +11041,7 @@ class BeamMemory:
     # so entries cached under an older digest are not reused. Part of the
     # hashed payload; the opaque key keeps the "v2:" prefix because QueryCache's
     # opaque-path recognition (_OPAQUE_V2_KEY_RE) keys off that prefix.
-    _ENHANCED_RECALL_CACHE_VERSION = 13
+    _ENHANCED_RECALL_CACHE_VERSION = 14
     # NOTE: the key carries the env MNEMOSYNE_VEC_TYPE, not the table's
     # live DDL type — a reindex under a different type without a version
     # bump serves stale admission/ranking. Reindex flows must bump.
@@ -11774,21 +11774,19 @@ class BeamMemory:
             memory_id = r.memory_id
             if memory_id.startswith("cf_"):
                 continue
+            # Apply caller-supplied filters and the always-on
+            # isolation/validity contract to each tier the hit could be in.
             row_dict = self._fetch_polyphonic_row(
-                cursor, memory_id, tier=r.metadata.get("_self_echo_tier")
+                cursor, memory_id, tier=r.metadata.get("_self_echo_tier"),
+                passes=lambda d: self._polyphonic_row_passes_filters(
+                    d, from_date=from_date, to_date=to_date,
+                    source=source, topic=topic, author_id=author_id,
+                    author_type=author_type, channel_id=channel_id,
+                    veracity=veracity, memory_type=memory_type, now_iso=now_iso,
+                    cross_session=cross_session,
+                ),
             )
             if row_dict is None:
-                continue
-
-            # Apply caller-supplied filters and the always-on
-            # isolation/validity contract.
-            if not self._polyphonic_row_passes_filters(
-                row_dict, from_date=from_date, to_date=to_date,
-                source=source, topic=topic, author_id=author_id,
-                author_type=author_type, channel_id=channel_id,
-                veracity=veracity, memory_type=memory_type, now_iso=now_iso,
-                cross_session=cross_session,
-            ):
                 continue
 
             # Compose RRF combined_score with post-E4 multipliers so
@@ -11972,11 +11970,15 @@ class BeamMemory:
 
         return True
 
-    def _fetch_polyphonic_row(self, cursor, memory_id: str, tier=None) -> Optional[Dict]:
+    def _fetch_polyphonic_row(self, cursor, memory_id: str, tier=None,
+                              passes=None) -> Optional[Dict]:
         """Hydrate the producing tier, never replace an episodic hit with WM.
 
-        Untyped legacy engines keep their existing episodic-first fallback.
-        A typed result must not fall through to a different tier if deleted.
+        Untyped hits (graph, fact) try episodic first and take the first row
+        that ``passes``: the same id can exist in both tiers with different
+        owners, and a foreign episodic row must not hide the caller's working
+        row. A typed result must not fall through to a different tier if
+        deleted or filtered out.
         """
         tiers = (tier,) if tier in ("working", "episodic") else ("episodic", "working")
         for label in tiers:
@@ -11989,7 +11991,9 @@ class BeamMemory:
             cursor.execute(f"SELECT {columns} FROM {table} WHERE id = ?", (memory_id,))
             row = cursor.fetchone()
             if row is not None:
-                return self._polyphonic_row_to_dict(row, tier_label=label)
+                row_dict = self._polyphonic_row_to_dict(row, tier_label=label)
+                if passes is None or passes(row_dict):
+                    return row_dict
         return None
 
     def _polyphonic_row_to_dict(self, row, *, tier_label: str) -> Dict:
