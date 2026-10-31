@@ -1150,13 +1150,17 @@ def _polyphonic_scope_where(
     author_id: Optional[str] = None,
     author_type: Optional[str] = None,
     channel_id: Optional[str] = None,
+    veracity: Optional[str] = None,
+    memory_type: Optional[str] = None,
 ) -> Tuple[str, List[Any]]:
     """Scope predicate the polyphonic voices apply before their own limits.
 
     It must never be stricter than _polyphonic_row_passes_filters, which
     keeps rows whose session_id is NULL (import writes NULL when an export
-    carries one), so those rows are let through here too. The exact author
-    and channel filters match the post-filter's equality checks.
+    carries one), so those rows are let through here too. The exact author,
+    channel, veracity and memory_type filters match the post-filter's
+    equality checks. The date filters stay post-filter only: the post-filter
+    and SQL disagree on date-only timestamps.
     """
     clause, params = _recall_scope_where(
         session_id=session_id, cross_session=cross_session,
@@ -1166,7 +1170,8 @@ def _polyphonic_scope_where(
         clause = f"({clause} OR session_id IS NULL)"
     clauses = [clause]
     for column, value in (("author_id", author_id), ("author_type", author_type),
-                          ("channel_id", channel_id)):
+                          ("channel_id", channel_id), ("veracity", veracity),
+                          ("memory_type", memory_type)):
         if value:
             clauses.append(f"{column} = ?")
             params.append(value)
@@ -11036,7 +11041,7 @@ class BeamMemory:
     # so entries cached under an older digest are not reused. Part of the
     # hashed payload; the opaque key keeps the "v2:" prefix because QueryCache's
     # opaque-path recognition (_OPAQUE_V2_KEY_RE) keys off that prefix.
-    _ENHANCED_RECALL_CACHE_VERSION = 12
+    _ENHANCED_RECALL_CACHE_VERSION = 13
     # NOTE: the key carries the env MNEMOSYNE_VEC_TYPE, not the table's
     # live DDL type — a reindex under a different type without a version
     # bump serves stale admission/ranking. Reindex flows must bump.
@@ -11714,6 +11719,7 @@ class BeamMemory:
         scope_where, scope_params = _polyphonic_scope_where(
             session_id=self.session_id, cross_session=cross_session,
             author_id=author_id, author_type=author_type, channel_id=channel_id,
+            veracity=veracity, memory_type=memory_type,
         )
         try:
             polyphonic_results = engine.recall(
