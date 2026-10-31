@@ -55,7 +55,7 @@ def _write_map(monkeypatch, data_dir: Path, mapping: dict) -> Path:
     return path
 
 
-def _provider(tmp_path, monkeypatch, *, session_id, gateway_key, identity):
+def _provider(tmp_path, monkeypatch, *, session_id, gateway_key, identity, agent_context="primary"):
     """Build a provider whose banks live under ``tmp_path/data``."""
     from mnemosyne_hermes import MnemosyneMemoryProvider
 
@@ -73,7 +73,7 @@ def _provider(tmp_path, monkeypatch, *, session_id, gateway_key, identity):
         hermes_home=str(hermes_home),
         agent_identity=identity,
         gateway_session_key=gateway_key,
-        agent_context="primary",
+        agent_context=agent_context,
     )
     return provider
 
@@ -105,6 +105,24 @@ def _bank_entry(provider, bank: str):
     cache = getattr(provider, "_bank_cache", None) or {}
     key = bank_router.cache_key(bank, getattr(provider, "_hermes_home", None))
     return cache.get(key)
+
+
+def _session_rows(db_path: Path) -> dict:
+    """``{content: session_id}`` of the working memory in a bank database."""
+    if not db_path.exists():
+        return {}
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        cols = [row[1] for row in con.execute("PRAGMA table_info(working_memory)")]
+        session_col = next((c for c in ("session_id", "session") if c in cols), None)
+        if session_col is None:
+            return {}
+        rows = con.execute(
+            f"SELECT content, {session_col} FROM working_memory"  # noqa: S608
+        ).fetchall()
+        return {str(content): str(session) for row in rows for content, session in [row]}
+    finally:
+        con.close()
 
 
 def _capturing_beam(monkeypatch):
@@ -427,4 +445,84 @@ def test_sleep_tool_must_use_the_current_session_bank(tmp_path, monkeypatch):
     assert captured.get("db_path"), "the sleep tool never ran"
     assert captured["db_path"] == str(_bank_path(provider, "alice")), (
         f"the sleep tool ran against {captured['db_path']} instead of Alice's bank"
+    )
+
+
+# --- the two CodeRabbit majors, pinned as regressions ---------------------
+
+
+def test_a_skipped_context_must_not_bind_a_routed_bank(tmp_path, monkeypatch):
+    """A provider without a live Beam must not get a bank.
+
+    A skipped context (subagent, cron, background) or a failed init leaves
+    the provider without its own Beam. Routing must not create a bank behind
+    the runtime's back and report a successful write where the main context
+    reports ``memory_unavailable``.
+    """
+    _write_map(
+        monkeypatch, tmp_path / "data",
+        {"_default": "vela", "_unknown": "quarantine", BOB_KEY: "bob"},
+    )
+    provider = _provider(
+        tmp_path, monkeypatch,
+        session_id="sess-a", gateway_key=BOB_KEY, identity="bob",
+        agent_context="subagent",
+    )
+    assert provider._beam is None, "the skipped context has a Beam"
+
+    payload = _remember(provider, "Diese Zeile darf nicht gespeichert werden")
+
+    assert payload.get("status") == "memory_unavailable", payload
+    assert payload.get("reason_code") == "skipped_context", payload
+    assert not (tmp_path / "data" / "banks" / "bob").exists(), (
+        "the skipped context created a bank"
+    )
+
+
+def test_a_cached_bank_must_follow_the_session_across_a_switch(tmp_path, monkeypatch):
+    """A cached bank must carry the session of the chat that writes now.
+
+    The bank instance is cached per storage identity, so a session-scoped
+    write after a session switch could still be attributed to the session
+    that visited the bank first. Every write must carry the session id of
+    the chat it belongs to.
+    """
+    data = tmp_path / "data"
+    _write_map(
+        monkeypatch, data,
+        {"_default": "vela", "_unknown": "quarantine", ALICE_KEY: "alice", BOB_KEY: "bob"},
+    )
+    provider = _provider(
+        tmp_path, monkeypatch,
+        session_id="sess-a", gateway_key=ALICE_KEY, identity="alice",
+    )
+
+    assert _call(
+        provider, "mnemosyne_remember",
+        {"content": "Alice zuerst", "scope": "session"},
+    ).get("status") == "stored"
+
+    provider.on_session_switch("sess-b", gateway_session_key=BOB_KEY)
+    assert _call(
+        provider, "mnemosyne_remember",
+        {"content": "Bob danach", "scope": "session"},
+    ).get("status") == "stored"
+
+    provider.on_session_switch("sess-c", gateway_session_key=ALICE_KEY)
+    assert _call(
+        provider, "mnemosyne_remember",
+        {"content": "Alice wieder", "scope": "session"},
+    ).get("status") == "stored"
+
+    alice = _session_rows(data / "banks" / "alice" / "mnemosyne.db")
+    bob = _session_rows(data / "banks" / "bob" / "mnemosyne.db")
+
+    assert alice.get("Alice zuerst") == alice.get("Alice wieder"), (
+        f"the cached bank mixed the sessions: {alice}"
+    )
+    assert alice.get("Alice zuerst") != bob.get("Bob danach"), (
+        "the two chats shared a session id"
+    )
+    assert "Alice wieder" in alice and "Bob danach" in bob, (
+        f"a write landed in the wrong bank: alice={alice} bob={bob}"
     )
