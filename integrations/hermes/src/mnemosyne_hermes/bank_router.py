@@ -78,8 +78,16 @@ def _read_map_state(hermes_home: Optional[str] = None) -> tuple[str, dict]:
     path = map_path(hermes_home)
     try:
         mtime = path.stat().st_mtime
-    except OSError:
+    except FileNotFoundError:
+        # The map file is not there: the feature was never switched on.
         return _MAP_ABSENT, {}
+    except OSError:
+        # The file may well exist — it only cannot be *inspected* (a
+        # permission error, an I/O error, a path that is not a directory).
+        # "Cannot be inspected" is not "does not exist": a missing map
+        # switches the routing off, and that opens the private profile
+        # storage (review round 2, R6).
+        return _MAP_FAILED, {}
     key = str(path)
     with _lock:
         hit = _meta_cache.get(key)
@@ -134,16 +142,39 @@ def routing_enabled(hermes_home: Optional[str] = None) -> bool:
     return bool(entries)
 
 
+def _is_valid_bank_name(name: str) -> bool:
+    """A bank name must be a plain directory name inside the banks root.
+
+    The router and the path builder must agree on this: the router decides
+    *which* bank a turn belongs to, the builder decides *where* that bank
+    lives. Two definitions would let a name pass the first and be rejected
+    by the second (review round 2).
+    """
+    name = str(name or "").strip()
+    if not name or name in {".", ".."}:
+        return False
+    return not any(sep in name for sep in ("/", "\\", "\x00"))
+
+
 def _meta(hermes_home: Optional[str] = None) -> dict:
     """Metafelder (`_default`, `_unknown`) aus **derselben** Datei wie die Map.
 
     Der Pfad muss aus dem aufrufenden Home kommen; sonst liest ein fremdes
     Profil die Vorgaben des Standard-Homes (review P2).
+
+    A meta value that names no usable bank falls back to ``quarantine``:
+    an unusable name must never widen the reach of a turn (review round 2,
+    R1). A blank value names no bank either.
     """
     raw = _read_map(hermes_home)
+
+    def _meta_value(key: str) -> str:
+        value = str(raw.get(key) or "").strip()
+        return value if _is_valid_bank_name(value) else "quarantine"
+
     return {
-        "_default": str(raw.get("_default") or "quarantine"),
-        "_unknown": str(raw.get("_unknown") or "quarantine"),
+        "_default": _meta_value("_default"),
+        "_unknown": _meta_value("_unknown"),
     }
 
 
@@ -203,6 +234,13 @@ def resolve_bank(session_key: str, hermes_home: Optional[str] = None) -> tuple[s
         if _is_component_prefix(key, pattern) and len(pattern) > len(best):
             best, best_bank = pattern, bank
     if best:
+        if not _is_valid_bank_name(best_bank):
+            # A mapping that names no bank is a broken configuration, not
+            # "routing is off". Reporting an empty bank here would switch
+            # the provider back to the private profile storage and hand
+            # the private memories of the profile owner to whoever the
+            # entry names (review round 2, R1).
+            return "quarantine", f"map:{best}:invalid-bank:fail-closed"
         return best_bank, f"map:{best}"
 
     return meta["_unknown"], "unknown:fail-closed"
@@ -211,7 +249,7 @@ def resolve_bank(session_key: str, hermes_home: Optional[str] = None) -> tuple[s
 def bank_db_path(bank: str, hermes_home: Optional[str] = None) -> Path:
     """Datenbankdatei einer Bank — nur innerhalb von ``<data>/banks``."""
     name = str(bank or "").strip()
-    if not name or name in {".", ".."} or any(sep in name for sep in ("/", "\\", "\x00")):
+    if not _is_valid_bank_name(name):
         raise ValueError(f"invalid bank name: {bank!r}")
     root = data_dir(hermes_home) / "banks"
     path = root / name / "mnemosyne.db"

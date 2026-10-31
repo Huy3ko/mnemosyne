@@ -90,10 +90,17 @@ case resolves away from the private profile storage:
 | Situation | Behaviour |
 |---|---|
 | Chat identity known, not mapped | `_unknown` bank (default `quarantine`) |
-| Map file exists but cannot be read or parsed | `_unknown` bank (default `quarantine`) — **never** the private profile storage |
+| Map file exists but cannot be read or parsed | Always the literal `quarantine` bank, regardless of `_unknown` — **never** the private profile storage |
+| Map file exists but cannot be inspected at all (permission error, I/O error) | Same as above: the literal `quarantine` bank. Only a genuinely missing map switches the routing off |
+| A mapped chat identity whose bank name is empty or unusable | The literal `quarantine` bank. A broken entry is a broken configuration, not a reason to fall back to the private profile storage |
 | Map file missing, or contains only meta keys | Routing off; the provider behaves as before the feature |
 | Bank name with a path separator or `..` | Error — the bank directory is never left |
 | Provider without its own Beam (skipped contexts) | Stays unavailable (`memory_unavailable`); routing does not create a bank for it |
+
+The `_unknown` bank applies **only** to chat identities that no key matches.
+A configured `_unknown` never receives a broken configuration: a map that
+cannot be read, or an entry that names no usable bank, always lands in the
+literal `quarantine` bank.
 
 The last row matters for subagents and background runs: a provider that the
 runtime deliberately skipped does not get a bank behind the runtime's back.
@@ -114,8 +121,31 @@ configuration boundary: a name that would leave `<data dir>/banks` is rejected.
 
 Each bank carries its own session scope. When the active session changes, the
 cached bank instance is rebound to the new session; an explicitly configured
-channel is preserved, an implicit one follows the session. Session-end
-consolidation and the automatic sleep run against the bank that was written.
+channel is preserved, an implicit one follows the session.
+
+### Which bank a lifecycle operation touches
+
+Session-end consolidation, the automatic sleep and the `mnemosyne_sleep` tool
+run against the bank of the **session that triggered them** — not against the
+bank of the chat that wrote last. After a session switch back, the route is
+resolved from the current session key again, so the lifecycle work follows the
+session it belongs to.
+
+### Connections and their owners
+
+Every bank is a separate SQLite database, and the core caches one connection
+per (thread, database path). Two consequences matter in operation:
+
+- A bank that was bound in a worker thread owns a handle that the thread
+  running the shutdown cannot see in its own cache. The shutdown releases the
+  handle itself, not the cache of the calling thread.
+- Two providers that open the same bank in the same process share one
+  connection object. A handle is therefore closed only when its **last** owner
+  lets go of it — one provider's shutdown never breaks another's live
+  instance.
+
+A re-initialization (`initialize()`) reuses the cached bank, so the same
+storage path is still served by exactly one connection.
 
 ---
 
@@ -136,6 +166,7 @@ The reason strings are stable and worth knowing:
 | Reason | Meaning |
 |---|---|
 | `map:<pattern>` | The turn matched a key. |
+| `map:<pattern>:invalid-bank:fail-closed` | The matched key names no usable bank. Fail-closed: the turn goes to `quarantine`. |
 | `default:kein-session-key` | No chat identity in this turn. |
 | `default:kein-chat-kontext` | The session key is not a chat identity. |
 | `unknown:fail-closed` | A chat identity that no key matches. |
@@ -149,6 +180,18 @@ The reason strings are stable and worth knowing:
 Delete the map file, or point `MNEMOSYNE_BANKS_MAP` at a path that does not
 exist. The next turn is routed as before the feature. Bank databases stay on
 disk — remove `<data dir>/banks/` by hand if you want them gone.
+
+Deployment implications:
+
+- Enabling routing does not move or partition existing profile memories.
+  They stay in the profile database.
+- Turning routing off restores access to those shared profile memories.
+- Bank memories stay in their own databases and are not merged back.
+- A missing map turns routing off. A map that exists but cannot be parsed
+  routes to `quarantine`.
+
+Removing the map is therefore a **fail-open** action — the profile storage
+becomes reachable again — while a broken map is fail-closed.
 
 ---
 
