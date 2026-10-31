@@ -130,3 +130,20 @@ def test_case_variants_do_not_displace_a_distinct_participant(tmp_path):
         assert graph.find_gists_by_participant("Erin") == []
     finally:
         graph.conn.close()
+
+
+def test_participant_lookup_ignores_case_with_case_sensitive_like(tmp_path):
+    graph = EpisodicGraph(db_path=tmp_path / "graph.db")
+    try:
+        graph.conn.execute("PRAGMA case_sensitive_like=ON")
+        if graph.conn.execute("SELECT 'she' LIKE 'She'").fetchone()[0] != 0:
+            pytest.skip("SQLite does not support case_sensitive_like")
+        gist = graph.extract_gist("she met Alice; She met Bob", "m1")
+        graph.store_gist(gist, "m1")
+
+        assert gist.participants == ["she", "Alice", "Bob"]
+        assert [g.id for g in graph.find_gists_by_participant("She")] == ["gist_m1"]
+        assert [g.id for g in graph.find_gists_by_participant("ALICE")] == ["gist_m1"]
+        assert graph.find_gists_by_participant("Carol") == []
+    finally:
+        graph.conn.close()

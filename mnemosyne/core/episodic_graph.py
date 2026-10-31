@@ -640,11 +640,11 @@ class EpisodicGraph:
         return facts
     
     def find_gists_by_participant(self, participant: str) -> List[Gist]:
-        """Find all gists involving a participant."""
+        """Find gists by participant, ignoring ASCII case even with case-sensitive LIKE."""
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT * FROM gists 
-            WHERE participants_json LIKE ?
+            WHERE lower(participants_json) LIKE lower(?)
             ORDER BY timestamp DESC
         """, (f'%"{participant}"%',))
         
