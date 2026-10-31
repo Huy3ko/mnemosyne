@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import numpy as np
-except ImportError:
+except Exception:
     np = None
 
 # --- fastembed (local ONNX) ---
@@ -92,7 +92,9 @@ def _ensure_fastembed() -> bool:
         except Exception as exc:  # noqa: BLE001
             # Defer cooldown along with the warning during alias evaluation,
             # so the first runtime call can report the broken dependency.
-            if not _IMPORTING and not isinstance(exc, ModuleNotFoundError):
+            if not _IMPORTING and not (
+                isinstance(exc, ModuleNotFoundError) and exc.name == "numpy"
+            ):
                 _DENSE_STACK_RETRY_AT = time.monotonic() + _DENSE_STACK_BROKEN_BACKOFF
             if not _DENSE_STACK_WARNED and not _IMPORTING:
                 logger.warning("could not import numpy: %s", exc)
@@ -103,7 +105,9 @@ def _ensure_fastembed() -> bool:
         except Exception as exc:  # noqa: BLE001
             # Defer cooldown along with the warning during alias evaluation,
             # so the first runtime call can report the broken dependency.
-            if not _IMPORTING and not isinstance(exc, ModuleNotFoundError):
+            if not _IMPORTING and not (
+                isinstance(exc, ModuleNotFoundError) and exc.name == "fastembed"
+            ):
                 _DENSE_STACK_RETRY_AT = time.monotonic() + _DENSE_STACK_BROKEN_BACKOFF
             if not _DENSE_STACK_WARNED and not _IMPORTING:
                 logger.warning("could not import fastembed: %s", exc)

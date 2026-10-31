@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import builtins
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import threading
@@ -73,7 +74,7 @@ def test_missing_dependency_is_immediately_retryable(dense_imports, module):
     """Backing off ModuleNotFoundError would delay recovery at the same clock time."""
     state = dense_imports
     state.failing = module
-    state.error = ModuleNotFoundError("dependency absent")
+    state.error = ModuleNotFoundError("dependency absent", name=module)
     assert embeddings._ensure_fastembed() is False
     state.failing = None
     assert embeddings._ensure_fastembed() is True
@@ -110,7 +111,7 @@ def test_concurrent_available_warns_once(
     dense_imports, monkeypatch, caplog, error_type, expected_attempts,
 ):
     """Both retry policies emit one warning to simultaneous callers."""
-    dense_imports.error = error_type("unavailable dependency")
+    dense_imports.error = error_type("unavailable dependency", name="numpy") if error_type is ModuleNotFoundError else error_type("unavailable dependency")
     monkeypatch.setattr(embeddings, "_is_disabled", lambda: False)
     monkeypatch.setattr(embeddings, "_is_api_model", lambda _: False)
     caplog.set_level(logging.WARNING, logger=embeddings.__name__)
@@ -140,3 +141,54 @@ def test_import_time_failure_does_not_defer_first_runtime_warning(
     assert embeddings._ensure_fastembed() is False
     assert len(caplog.records) == 1
     assert f"could not import {module}:" in caplog.records[0].getMessage()
+
+
+@pytest.mark.parametrize("module", ["numpy", "fastembed"])
+@pytest.mark.parametrize("missing", ["onnxruntime", "numpy._core", None])
+def test_missing_transitive_dependency_backs_off(dense_imports, module, missing):
+    """A missing dependency inside an installed package must not cause an import storm."""
+    state = dense_imports
+    state.failing = module
+    state.error = ModuleNotFoundError("installed package is broken", name=missing)
+    assert embeddings._ensure_fastembed() is False
+    attempts = list(state.attempts)
+    state.failing = None
+    assert embeddings._ensure_fastembed() is False
+    assert state.attempts == attempts
+    state.clock.now = 101.0
+    assert embeddings._ensure_fastembed() is True
+
+
+def test_fresh_module_survives_broken_numpy_and_recovers(monkeypatch, caplog):
+    """An initial NumPy RuntimeError must leave the lazy recovery path usable."""
+    original_import = builtins.__import__
+    state = SimpleNamespace(broken=True)
+    numpy = SimpleNamespace()
+    fastembed = SimpleNamespace(TextEmbedding=type("TextEmbedding", (), {}))
+
+    def import_optional(name, *args, **kwargs):
+        if name == "numpy":
+            if state.broken:
+                raise RuntimeError("broken NumPy initialization")
+            return numpy
+        if name == "fastembed":
+            return fastembed
+        return original_import(name, *args, **kwargs)
+
+    caplog.set_level(logging.WARNING, logger=embeddings.__name__)
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "__import__", import_optional)
+        spec = importlib.util.spec_from_file_location(
+            "embedding_fresh_import_probe", embeddings.__file__,
+        )
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        assert fresh.np is None
+        assert fresh._IMPORTING is False
+        assert fresh._ensure_fastembed() is False
+        assert "could not import numpy" in caplog.text
+        state.broken = False
+        patch.setattr(fresh, "_DENSE_STACK_RETRY_AT", 0.0)
+        assert fresh._ensure_fastembed() is True
+        assert fresh.np is numpy
+        assert fresh.TextEmbedding is fastembed.TextEmbedding
