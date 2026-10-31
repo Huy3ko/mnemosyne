@@ -80,3 +80,22 @@ def test_hit_hydrates_first_eligible_tier(tmp_path, monkeypatch, hint, episodic,
     results = beam.recall("quokka", top_k=5)
 
     assert [(r["id"], r["tier"]) for r in results] == _expected(hint, rows, cross_session)
+
+
+def test_caller_filter_falls_through_to_working_row(tmp_path, monkeypatch):
+    # Both rows are the caller's, so only the source filter tells them apart.
+    monkeypatch.setenv("MNEMOSYNE_POLYPHONIC_RECALL", "1")
+    monkeypatch.delenv("MNEMOSYNE_CROSS_SESSION", raising=False)
+    beam = bm.BeamMemory(session_id=CALLER, db_path=tmp_path / "memory.db")
+    _insert(beam, "episodic", "mine")
+    _insert(beam, "working", "mine")
+    beam.conn.execute("UPDATE working_memory SET source = 'conversation' WHERE id = ?", (MID,))
+    beam.conn.commit()
+    engine = _FakeEngine([PolyphonicResult(memory_id=MID, combined_score=0.9,
+                                           voice_scores={"graph": 0.9}, metadata={})])
+    monkeypatch.setattr(beam, "_get_polyphonic_engine", lambda: engine)
+
+    results = beam.recall("quokka", top_k=5, source="conversation")
+
+    assert [(r["id"], r["tier"], r["content"], r["session_id"]) for r in results] == [
+        (MID, "working", "working quokka", CALLER)]
