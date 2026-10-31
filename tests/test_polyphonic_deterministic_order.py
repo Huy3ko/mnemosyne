@@ -95,6 +95,8 @@ def test_gist_participants_do_not_depend_on_hash_seed():
         ("Alice, Bob, Carol, Dave and Erin met her", ["Alice", "Bob", "Carol", "Dave", "Erin"]),
         ("Alice told me that Bob and I saw Carol", ["Alice", "me", "Bob", "I", "Carol"]),
         ("Alice met Bob, Alice, Carol, Dave, Erin and Frank", ["Alice", "Bob", "Carol", "Dave", "Erin"]),
+        ("She saw Alice; she greeted Bob; She visited Carol; she told Dave", ["She", "Alice", "Bob", "Carol", "Dave"]),
+        ("she saw Alice; She greeted Bob; she visited Carol; She told Dave", ["she", "Alice", "Bob", "Carol", "Dave"]),
     ],
 )
 def test_gist_participants_keep_text_order_across_names_and_pronouns(text, expected):
@@ -112,3 +114,19 @@ def test_extracted_participants_are_what_the_graph_lookup_finds(tmp_path):
     assert [g.id for g in graph.find_gists_by_participant("Dave")] == ["gist_m1"]
     assert graph.find_gists_by_participant("Frank") == []
     graph.conn.close()
+
+
+def test_case_variants_do_not_displace_a_distinct_participant(tmp_path):
+    graph = EpisodicGraph(db_path=tmp_path / "graph.db")
+    try:
+        gist = graph.extract_gist(
+            "She saw Alice; she greeted Bob; She visited Carol; she told Dave and Erin", "m1"
+        )
+        graph.store_gist(gist, "m1")
+
+        assert gist.participants == ["She", "Alice", "Bob", "Carol", "Dave"]
+        assert [g.id for g in graph.find_gists_by_participant("she")] == ["gist_m1"]
+        assert [g.id for g in graph.find_gists_by_participant("Dave")] == ["gist_m1"]
+        assert graph.find_gists_by_participant("Erin") == []
+    finally:
+        graph.conn.close()

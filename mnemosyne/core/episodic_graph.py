@@ -334,10 +334,12 @@ class EpisodicGraph:
             for m in re.finditer(pronoun_pattern, content, re.IGNORECASE)
         ]
         
-        # Combine and deduplicate in text order, so the cap keeps the first five
-        # mentions; a set would let the string hash seed pick the survivors.
-        participants = list(dict.fromkeys(p for _, p in sorted(names + pronouns)))
-        return participants[:5]  # Cap at 5
+        # Keep the first spelling in text order. Case variants share a lookup
+        # identity and must not consume extra slots before the five-person cap.
+        participants = {}
+        for _, participant in sorted(names + pronouns):
+            participants.setdefault(participant.casefold(), participant)
+        return list(participants.values())[:5]
     
     def _extract_temporal_scope(self, content: str) -> Optional[str]:
         """Extract temporal references."""
