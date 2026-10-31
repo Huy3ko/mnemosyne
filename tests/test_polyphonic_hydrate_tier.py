@@ -82,7 +82,11 @@ def test_hit_hydrates_first_eligible_tier(tmp_path, monkeypatch, hint, episodic,
     assert [(r["id"], r["tier"]) for r in results] == _expected(hint, rows, cross_session)
 
 
-def test_caller_filter_falls_through_to_working_row(tmp_path, monkeypatch):
+@pytest.mark.parametrize("hint,expected", [
+    (None, [(MID, "working", "working quokka", CALLER)]),
+    ("episodic", []),
+], ids=["untyped-falls-through", "typed-episodic-stays"])
+def test_caller_filter_rejecting_episodic_row(tmp_path, monkeypatch, hint, expected):
     # Both rows are the caller's, so only the source filter tells them apart.
     monkeypatch.setenv("MNEMOSYNE_POLYPHONIC_RECALL", "1")
     monkeypatch.delenv("MNEMOSYNE_CROSS_SESSION", raising=False)
@@ -91,11 +95,11 @@ def test_caller_filter_falls_through_to_working_row(tmp_path, monkeypatch):
     _insert(beam, "working", "mine")
     beam.conn.execute("UPDATE working_memory SET source = 'conversation' WHERE id = ?", (MID,))
     beam.conn.commit()
+    metadata = {"_self_echo_tier": hint} if hint else {}
     engine = _FakeEngine([PolyphonicResult(memory_id=MID, combined_score=0.9,
-                                           voice_scores={"graph": 0.9}, metadata={})])
+                                           voice_scores={"graph": 0.9}, metadata=metadata)])
     monkeypatch.setattr(beam, "_get_polyphonic_engine", lambda: engine)
 
     results = beam.recall("quokka", top_k=5, source="conversation")
 
-    assert [(r["id"], r["tier"], r["content"], r["session_id"]) for r in results] == [
-        (MID, "working", "working quokka", CALLER)]
+    assert [(r["id"], r["tier"], r["content"], r["session_id"]) for r in results] == expected
