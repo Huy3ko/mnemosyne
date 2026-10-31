@@ -120,6 +120,8 @@ def test_config_change_during_local_load_is_not_cached(
     so this call has no local vector. That miss must not be cached under the local key,
     or the query keeps getting None after the config changes back.
     """
+    # Opt-out only looks like a config change when fastembed could have loaded.
+    monkeypatch.setattr(embeddings, "_is_fastembed_available", lambda: True)
     fake_local = embeddings._get_model
 
     def flip_then_load():
