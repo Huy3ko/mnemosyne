@@ -83,7 +83,8 @@ def _make_blocked_import(original_import):
     def _blocked_import(name, *args, **kwargs):
         if name in _DENSE_MODULES or name.split(".")[0] in _DENSE_MODULES:
             raise ModuleNotFoundError(
-                f"No module named '{name}' (simulated dense-stack import window)"
+                f"No module named '{name}' (simulated dense-stack import window)",
+                name=name,
             )
         return original_import(name, *args, **kwargs)
     return _blocked_import
