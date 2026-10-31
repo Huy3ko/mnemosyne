@@ -117,6 +117,12 @@ MODES = {
         "caller", {"veracity": "stated", "memory_type": "artifact"},
         "caller", {"veracity": "inferred", "memory_type": "artifact"},
         {"veracity": "stated", "memory_type": "artifact"}, False),
+    "memory_type-null-noise": ("caller", {"memory_type": "artifact"}, "caller", {"memory_type": None},
+                               {"memory_type": "artifact"}, False),
+    "both-filters-cross-session": (
+        "other", {"veracity": "stated", "memory_type": "artifact"},
+        "other", {"veracity": "inferred", "memory_type": "artifact"},
+        {"veracity": "stated", "memory_type": "artifact"}, True),
 }
 
 
@@ -140,8 +146,8 @@ def _seed(caller, other, mode, target_first):
 
 def _check(results, mode, target_id, noise_ids):
     ids = [r["id"] for r in results]
-    if MODES[mode][5]:
-        # Cross-session: the noise is visible, so it legitimately outranks the target.
+    if MODES[mode][5] and not MODES[mode][4]:
+        # Cross-session with no filter: the noise is visible, so it legitimately outranks the target.
         assert set(ids) & noise_ids
     else:
         assert target_id in ids
