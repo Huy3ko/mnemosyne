@@ -312,28 +312,40 @@ def _release_thread_connection(db_path=None) -> None:
 #     handle. Closing it on behalf of one of them breaks the other -- the
 #     "cannot operate on a closed database" error.
 #
-# The registry below counts the live owners per (thread, path) so a handle is
+# The registry below counts the live owners per HANDLE OBJECT, so a handle is
 # closed exactly when its last owner lets go of it.
-_CONNECTION_CLAIMS: Dict[Tuple[int, str], int] = {}
+#
+# The key is deliberately the handle object and NOT (thread, path). The core
+# keeps only ONE connection per THREAD: opening a second path in the same
+# thread REPLACES the cached connection, and opening the first path again
+# then creates a NEW connection object for it. (thread, path) therefore
+# identifies a path, not a connection -- two instances that use the same
+# path can hold two different connection objects, and a counter per
+# (thread, path) would either close a handle a sibling still uses or leave
+# one open forever (review round 3).
+#
+# The handle is the identity of the resource. It is not weak-referenceable
+# (sqlite3.Connection), so the registry keeps it alive on purpose: the entry
+# is removed when the last owner lets go, which is exactly when the handle
+# is closed.
+_CONNECTION_CLAIMS: Dict[Any, int] = {}
 _CONNECTION_CLAIMS_LOCK = threading.Lock()
 
 
-def _claim_connection(thread_id: int, db_path: str) -> None:
+def _claim_connection(handle: Any) -> None:
     """Record one more live owner of a connection handle."""
-    key = (int(thread_id), str(db_path))
     with _CONNECTION_CLAIMS_LOCK:
-        _CONNECTION_CLAIMS[key] = _CONNECTION_CLAIMS.get(key, 0) + 1
+        _CONNECTION_CLAIMS[handle] = _CONNECTION_CLAIMS.get(handle, 0) + 1
 
 
-def _release_connection(thread_id: int, db_path: str) -> bool:
-    """Drop one owner; return True when the last owner let go."""
-    key = (int(thread_id), str(db_path))
+def _release_connection(handle: Any) -> bool:
+    """Drop one owner of THIS handle; return True when the last one let go."""
     with _CONNECTION_CLAIMS_LOCK:
-        count = _CONNECTION_CLAIMS.get(key, 0) - 1
+        count = _CONNECTION_CLAIMS.get(handle, 0) - 1
         if count > 0:
-            _CONNECTION_CLAIMS[key] = count
+            _CONNECTION_CLAIMS[handle] = count
             return False
-        _CONNECTION_CLAIMS.pop(key, None)
+        _CONNECTION_CLAIMS.pop(handle, None)
         return True
 
 
@@ -3190,41 +3202,34 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
         """Register this provider as an owner of a bank's connection handle.
 
         The handle belongs to the thread that opened it, and the thread that
-        opened it may be a worker. The claim is keyed by (thread, path) so a
-        second instance that shares the handle is counted as a second owner
-        (review round 2, R3).
+        opened it may be a worker. The claim is keyed by the HANDLE OBJECT
+        itself, so a second instance that shares the handle is counted as a
+        second owner (review round 2, R3).
+
+        The key is the handle, not (thread, path): the core keeps one
+        connection per thread and replaces it when another path is opened,
+        so the same (thread, path) can be served by two different
+        connection objects (review round 3).
 
         Every attribute is read defensively: a provider may exist without a
         full initialization (the parity tests build one with ``__new__``).
         """
         handle = getattr(mem, "conn", None)
-        db_path = str(getattr(mem, "db_path", "") or "")
-        if handle is None or not db_path:
+        if handle is None:
             return
-        thread_id = getattr(mem, "_vela_owner_thread_id", None)
-        if thread_id is None:
-            thread_id = threading.get_ident()
-            try:
-                mem._vela_owner_thread_id = thread_id
-            except Exception:
-                pass
-        _claim_connection(thread_id, db_path)
+        _claim_connection(handle)
 
     def _release_bank_connection(self, mem) -> bool:
         """Drop this provider's claim on a bank's handle.
 
-        Returns True when the last owner let go, i.e. when the handle may be
-        closed. A shared handle stays open for the instance that still uses it
-        (review round 2, R3).
+        Returns True when the last owner of THIS handle let go, i.e. when
+        the handle may be closed. A shared handle stays open for the
+        instance that still uses it (review round 2, R3).
         """
         handle = getattr(mem, "conn", None)
-        db_path = str(getattr(mem, "db_path", "") or "")
-        if handle is None or not db_path:
+        if handle is None:
             return False
-        thread_id = getattr(mem, "_vela_owner_thread_id", None)
-        if thread_id is None:
-            thread_id = threading.get_ident()
-        return _release_connection(thread_id, db_path)
+        return _release_connection(handle)
 
     def _close_bank_handle(self, mem) -> None:
         """Close one bank's connection handle (only its last owner may)."""
@@ -3261,13 +3266,7 @@ class MnemosyneMemoryProvider(HermesPersonaPromptMixin, MemoryProvider):
             if handle is None or id(handle) in seen_handles:
                 continue
             seen_handles.add(id(handle))
-            db_path = str(getattr(owner, "db_path", "") or "")
-            if not db_path:
-                continue
-            thread_id = getattr(owner, "_vela_owner_thread_id", None)
-            if thread_id is None:
-                thread_id = threading.get_ident()
-            if not _release_connection(thread_id, db_path):
+            if not _release_connection(handle):
                 continue
             try:
                 handle.close()

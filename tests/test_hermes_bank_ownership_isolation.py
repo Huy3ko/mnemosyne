@@ -344,6 +344,82 @@ def test_shutdown_must_close_the_profile_connection_too(tmp_path, monkeypatch):
     )
 
 
+def test_shutdown_must_close_a_handle_whose_connection_object_was_replaced(
+    tmp_path, monkeypatch
+):
+    """A connection object replaced under the same path must still be closed.
+
+    The core keeps ONE connection per THREAD.  Opening a second path in the
+    same thread replaces the cached connection; opening the first path again
+    then creates a NEW connection object for it.  Two providers that use the
+    same bank path can therefore hold two different connection objects.
+
+    A registry keyed by (thread, path) cannot tell them apart: it counts one
+    resource where two exist.  When the last owner lets go, only one of the
+    two handles is closed and the other stays open forever -- a connection
+    leak that outlives the provider.
+
+    The invariant: after both providers shut down, NO handle of either may
+    still be usable.
+    """
+    _write_map(
+        monkeypatch, tmp_path / "data",
+        {"_default": "vela", "_unknown": "quarantine", ALICE_KEY: "alice"},
+    )
+    first = _provider(
+        tmp_path, monkeypatch,
+        session_id="sess-a", gateway_key=ALICE_KEY, identity="alice",
+    )
+    assert _remember(first, "Satz aus der ersten Instanz").get("status") == "stored"
+
+    # The trigger: another path is opened in the SAME thread.  The core keeps
+    # one connection per thread, so this REPLACES the cached connection.  The
+    # next access to the bank path then creates a NEW connection object for
+    # it -- same thread, same path, different object.
+    from mnemosyne.core.memory import _get_connection
+
+    _get_connection(str(tmp_path / "data" / "banks" / "quarantine" / "mnemosyne.db"))
+
+    # The same home, so both instances resolve the SAME bank path.
+    second = _provider(
+        tmp_path, monkeypatch,
+        session_id="sess-c", gateway_key=ALICE_KEY, identity="alice",
+    )
+    assert _remember(second, "Satz aus der zweiten Instanz").get("status") == "stored"
+
+    handles = []
+    for provider in (first, second):
+        entry = _bank_entry(provider, "alice")
+        assert entry is not None, "the bank was not bound"
+        handle = entry[1].conn
+        if not any(handle is h for h in handles):
+            handles.append(handle)
+
+    # The precondition of this test: the two instances hold DIFFERENT
+    # connection objects for the same path.  If the core ever changes to
+    # cache one connection per (thread, path), the premise disappears and
+    # the test has to be re-thought -- it must not pass by accident.
+    assert len(handles) == 2, (
+        "the two instances share one connection object; this test does not "
+        "exercise the replaced-connection case any more"
+    )
+
+    first.shutdown()
+    second.shutdown()
+
+    still_alive = []
+    for handle in handles:
+        try:
+            handle.execute("SELECT 1")
+        except sqlite3.ProgrammingError:
+            continue
+        still_alive.append(handle)
+    assert not still_alive, (
+        f"{len(still_alive)} of {len(handles)} connections survived the "
+        f"shutdown -- the replaced connection object was never closed"
+    )
+
+
 # --- O2: session isolation -------------------------------------------------
 
 
